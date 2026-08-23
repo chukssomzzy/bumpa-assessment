@@ -36,7 +36,10 @@ export async function createTestApp(): Promise<TestContext> {
     .compile();
 
   const app = moduleRef.createNestApplication({ rawBody: true });
-  await app.init();
+  // listen(), not just init(): supertest binds the server lazily on first use,
+  // so concurrent requests constructed in one tick race that bind and the losers
+  // get ECONNRESET. Binding once up front makes the concurrency tests honest.
+  await app.listen(0);
 
   const dataSource = app.get(DataSource);
   const provider = app.get(FakePaymentProvider);
