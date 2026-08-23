@@ -1,6 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
-import { PAYOUT_QUEUE, type PayoutJob } from '../common/queues';
+import { PAYOUT_QUEUE, type PayoutJob } from '../../common/queues';
 import { PayoutsService } from './payouts.service';
 
 @Processor(PAYOUT_QUEUE)

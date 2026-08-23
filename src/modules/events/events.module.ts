@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AchievementsModule } from '../achievements/achievements.module';
-import { EVALUATE_QUEUE } from '../common/queues';
+import { EVALUATE_QUEUE } from '../../common/queues';
 import { PayoutsModule } from '../payouts/payouts.module';
 import { UsersModule } from '../users/users.module';
 import { EventsController } from './events.controller';

@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
-import { AchievementsModule } from '../../src/achievements/achievements.module';
+import { AchievementsModule } from '../../src/modules/achievements/achievements.module';
 import { CoreModule } from '../../src/core.module';
-import { EvaluateProcessor } from '../../src/events/evaluate.processor';
-import { EventsModule } from '../../src/events/events.module';
-import { PayoutSweeperService } from '../../src/payouts/payout-sweeper.service';
-import { PayoutProcessor } from '../../src/payouts/payout.processor';
-import { PayoutsModule } from '../../src/payouts/payouts.module';
+import { EvaluateProcessor } from '../../src/modules/events/evaluate.processor';
+import { EventsModule } from '../../src/modules/events/events.module';
+import { PayoutSweeperService } from '../../src/modules/payouts/payout-sweeper.service';
+import { PayoutProcessor } from '../../src/modules/payouts/payout.processor';
+import { PayoutsModule } from '../../src/modules/payouts/payouts.module';
 
 /**
  * Both module graphs in one process.

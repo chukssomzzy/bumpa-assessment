@@ -1,4 +1,7 @@
-import type { AchievementDefinition, BadgeDefinition } from '../../achievements/domain/types';
+import type {
+  AchievementDefinition,
+  BadgeDefinition,
+} from '../../modules/achievements/domain/types';
 
 /**
  * Reference data the system reads at runtime — not test fixtures.

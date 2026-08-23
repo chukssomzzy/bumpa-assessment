@@ -1,12 +1,12 @@
 import { DataSource, type DataSourceOptions } from 'typeorm';
-import { AchievementDefinitionEntity } from '../achievements/entities/achievement-definition.entity';
-import { BadgeDefinitionEntity } from '../achievements/entities/badge-definition.entity';
-import { UserAchievementEntity } from '../achievements/entities/user-achievement.entity';
-import { UserBadgeEntity } from '../achievements/entities/user-badge.entity';
-import { ProcessedEventEntity } from '../events/processed-event.entity';
-import { PayoutEntity } from '../payouts/payout.entity';
-import { UserProgressEntity } from '../users/user-progress.entity';
-import { UserEntity } from '../users/user.entity';
+import { AchievementDefinitionEntity } from '../modules/achievements/entities/achievement-definition.entity';
+import { BadgeDefinitionEntity } from '../modules/achievements/entities/badge-definition.entity';
+import { UserAchievementEntity } from '../modules/achievements/entities/user-achievement.entity';
+import { UserBadgeEntity } from '../modules/achievements/entities/user-badge.entity';
+import { ProcessedEventEntity } from '../modules/events/processed-event.entity';
+import { PayoutEntity } from '../modules/payouts/payout.entity';
+import { UserProgressEntity } from '../modules/users/user-progress.entity';
+import { UserEntity } from '../modules/users/user.entity';
 import { InitialSchema1700000000000 } from './migrations/1700000000000-InitialSchema';
 
 export const entities = [

@@ -94,13 +94,16 @@ describe('cashback, end to end', () => {
   });
 
   it('ignores a redelivered event', async () => {
+    // The view exposes no raw counter, so settle explicitly rather than racing
+    // the worker: the assertion is that a redelivery changes nothing.
     const event = purchase();
     expect((await post(event)).status).toBe(202);
-    const first = await until((v) => v.unlocked_achievements.length >= 0);
+    await new Promise((r) => setTimeout(r, 3000));
+    const afterFirstDelivery = await view();
 
     expect((await post(event)).status).toBe(202);
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 3000));
 
-    expect(await view()).toEqual(first);
+    expect(await view()).toEqual(afterFirstDelivery);
   });
 });

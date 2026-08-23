@@ -1,9 +1,9 @@
 import type { DataSource } from 'typeorm';
-import { AchievementDefinitionEntity } from '../achievements/entities/achievement-definition.entity';
-import { BadgeDefinitionEntity } from '../achievements/entities/badge-definition.entity';
-import { UserBadgeEntity } from '../achievements/entities/user-badge.entity';
-import { UserProgressEntity } from '../users/user-progress.entity';
-import { UserEntity } from '../users/user.entity';
+import { AchievementDefinitionEntity } from '../modules/achievements/entities/achievement-definition.entity';
+import { BadgeDefinitionEntity } from '../modules/achievements/entities/badge-definition.entity';
+import { UserBadgeEntity } from '../modules/achievements/entities/user-badge.entity';
+import { UserProgressEntity } from '../modules/users/user-progress.entity';
+import { UserEntity } from '../modules/users/user.entity';
 import { ACHIEVEMENT_DEFINITIONS, BADGE_DEFINITIONS, DEMO_USERS } from './seeds/definitions';
 
 /**

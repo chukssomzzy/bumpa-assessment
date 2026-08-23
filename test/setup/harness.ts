@@ -7,7 +7,7 @@ import { DataSource } from 'typeorm';
 import { Clock } from '../../src/common/clock';
 import { EVALUATE_QUEUE, PAYOUT_QUEUE } from '../../src/common/queues';
 import { seedDemoUsers } from '../../src/database/seed';
-import { FakePaymentProvider } from '../../src/payments/fake.provider';
+import { FakePaymentProvider } from '../../src/modules/payments/fake.provider';
 import { MutableClock } from './mutable-clock';
 import { TestAppModule } from './test-app.module';
 

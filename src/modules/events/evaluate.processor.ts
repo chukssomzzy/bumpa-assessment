@@ -1,6 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
-import { EVALUATE_QUEUE, type EvaluateJob } from '../common/queues';
+import { EVALUATE_QUEUE, type EvaluateJob } from '../../common/queues';
 
 /**
  * Applies one purchase event, then emits the resulting domain events.

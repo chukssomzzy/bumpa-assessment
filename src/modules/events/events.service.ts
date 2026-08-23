@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
-import { EVALUATE_QUEUE } from '../common/queues';
+import { EVALUATE_QUEUE } from '../../common/queues';
 
 @Injectable()
 export class EventsService {
