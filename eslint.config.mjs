@@ -21,6 +21,10 @@ export default tseslint.config(
       // Implementing an async port synchronously (e.g. the in-memory payment
       // provider) is normal and safe; this rule only adds noise.
       '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-member-access': 'off',
       '@typescript-eslint/no-unsafe-call': 'off',
