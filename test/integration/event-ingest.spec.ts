@@ -232,10 +232,15 @@ describe('POST /events', () => {
       }
       await drainEvaluateQueue(ctx, 60_000);
 
+      const badges = await badgeKeysBeyondBeginner(ctx, DEMO_USER_ID);
       const payouts = await payoutRows(ctx, DEMO_USER_ID);
+
+      // The invariant is one payout per earned badge, written with it. Status is
+      // deliberately not asserted here: the payout worker is live in this module
+      // and may already have dispatched. Lifecycle is covered in payouts.spec.ts.
+      expect(badges).toEqual(['intermediate']);
       expect(payouts).toHaveLength(1);
       expect(payouts[0].badge_key).toBe('intermediate');
-      expect(payouts[0].status).toBe('pending');
       expect(payouts[0].amount_kobo).toBe(30_000);
       expect(payouts[0].provider_reference).toEqual(expect.any(String));
     });

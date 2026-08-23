@@ -28,6 +28,9 @@ export class FakePaymentProvider extends PaymentProvider {
     this.recipients.clear();
     this.scripted = [];
     this.recipientFailure = null;
+    // Truncate in place: the provider is a singleton reused across every test in
+    // a file, so leaving this would leak transfer counts into later assertions.
+    this.requests.length = 0;
   }
 
   /** Every transfer the provider was asked to make, in order. */
