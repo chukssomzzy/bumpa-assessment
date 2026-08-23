@@ -66,15 +66,51 @@ export async function createTestApp(): Promise<TestContext> {
  * deliberately left alone: they are reference data, not fixtures.
  */
 export async function resetDatabase(dataSource: DataSource): Promise<void> {
-  await dataSource.query(
-    `TRUNCATE "user_achievements", "user_badges", "payouts", "processed_events", "user_progress", "users" RESTART IDENTITY CASCADE`,
-  );
+  // TRUNCATE takes an ACCESS EXCLUSIVE lock. A worker job left in flight by the
+  // previous test still holds row locks, so Postgres resolves the standoff by
+  // killing one side. Retrying is correct: the job finishes in milliseconds and
+  // the next attempt gets a clean lock. Surfaced only under CI load.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await dataSource.query(
+        `TRUNCATE "user_achievements", "user_badges", "payouts", "processed_events", "user_progress", "users" RESTART IDENTITY CASCADE`,
+      );
+      break;
+    } catch (error) {
+      const code = (error as { driverError?: { code?: string } }).driverError?.code;
+      if (code !== DEADLOCK || attempt >= 5) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+    }
+  }
   await seedDemoUsers(dataSource);
 }
 
+const DEADLOCK = '40P01';
+
+/**
+ * Removes queued work and waits for anything already running to finish.
+ *
+ * `obliterate` drops waiting jobs but cannot stop an active one, and an active
+ * job holds database row locks — which is what deadlocks a truncate.
+ */
 export async function clearQueues(ctx: TestContext): Promise<void> {
   await ctx.evaluateQueue.obliterate({ force: true }).catch(() => undefined);
   await ctx.payoutQueue.obliterate({ force: true }).catch(() => undefined);
+  await waitForIdle(ctx).catch(() => undefined);
+}
+
+/** Resolves once neither queue has an active job. */
+async function waitForIdle(ctx: TestContext, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const counts = await Promise.all([
+      ctx.evaluateQueue.getJobCounts('active'),
+      ctx.payoutQueue.getJobCounts('active'),
+    ]);
+    if (counts.every((c) => (c.active ?? 0) === 0)) return;
+    if (Date.now() > deadline) throw new Error('queues still active');
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 /** Signs `{timestamp}.{body}` exactly as the storefront would. */
