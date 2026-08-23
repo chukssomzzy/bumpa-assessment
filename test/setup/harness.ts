@@ -77,14 +77,14 @@ export async function clearQueues(ctx: TestContext): Promise<void> {
   await ctx.payoutQueue.obliterate({ force: true }).catch(() => undefined);
 }
 
-/** Signs a body exactly as the storefront would. */
+/** Signs `{timestamp}.{body}` exactly as the storefront would. */
 export function sign(
   body: string,
   timestamp: number = Math.floor(Date.now() / 1000),
   secret: string = WEBHOOK_SECRET,
 ): { 'x-signature': string; 'x-timestamp': string } {
   return {
-    'x-signature': createHmac('sha512', secret).update(body).digest('hex'),
+    'x-signature': createHmac('sha512', secret).update(`${timestamp}.${body}`).digest('hex'),
     'x-timestamp': String(timestamp),
   };
 }

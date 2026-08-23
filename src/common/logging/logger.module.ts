@@ -46,7 +46,9 @@ function genReqId(req: IncomingMessage, res: ServerResponse): string {
       useFactory: (config: ConfigType<typeof appConfig>) => ({
         pinoHttp: {
           genReqId,
-          autoLogging: { ignore: (req: IncomingMessage) => UNLOGGED_PATHS.has(req.url ?? '') },
+          autoLogging: {
+            ignore: (req: IncomingMessage) => UNLOGGED_PATHS.has((req.url ?? '').split('?')[0]),
+          },
           // The HMAC signature is a secret over the body, not a value to echo
           // into logs; authorization/cookie are the standard baseline.
           redact: {

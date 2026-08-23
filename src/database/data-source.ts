@@ -7,7 +7,7 @@ import { ProcessedEventEntity } from '../modules/events/processed-event.entity';
 import { PayoutEntity } from '../modules/payouts/payout.entity';
 import { UserProgressEntity } from '../modules/users/user-progress.entity';
 import { UserEntity } from '../modules/users/user.entity';
-import { InitialSchema1700000000000 } from './migrations/1700000000000-InitialSchema';
+import { InitialSchema1787486411006 } from './migrations/1787486411006-InitialSchema';
 
 export const entities = [
   UserEntity,
@@ -20,7 +20,7 @@ export const entities = [
   ProcessedEventEntity,
 ];
 
-export const migrations = [InitialSchema1700000000000];
+export const migrations = [InitialSchema1787486411006];
 
 export const dataSourceOptions = (url = process.env.DATABASE_URL): DataSourceOptions => ({
   type: 'postgres',

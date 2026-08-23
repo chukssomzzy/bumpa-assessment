@@ -43,8 +43,11 @@ badge; earning a badge pays the customer ₦300.
 
 ### `POST /events`
 
-Signed webhook ingest. Verifies an HMAC signature, then acknowledges with `202` and hands the work
-to a queue.
+Signed webhook ingest. Verifies an HMAC-SHA512 signature over `{timestamp}.{rawBody}`, checks the
+timestamp is within a freshness window, then acknowledges with `202` and hands the work to a queue.
+The timestamp is inside the signed payload deliberately: signing the body alone would leave the
+replay window unauthenticated, since an attacker could rewrite `x-timestamp` and the signature would
+still verify.
 
 ### `GET /health` and `GET /health/ready`
 
@@ -261,13 +264,17 @@ The seed creates two demo customers with test bank details, so this runs on a cl
 ```bash
 USER=11111111-1111-4111-8111-111111111111
 SECRET=$(grep '^WEBHOOK_SECRET=' .env | cut -d= -f2-)
-BODY="{\"type\":\"purchase.completed\",\"eventId\":\"evt-$(date +%s)\",\"userId\":\"$USER\",\"occurredAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
-SIG=$(printf '%s' "$BODY" | openssl dgst -sha512 -hmac "$SECRET" -r | cut -d' ' -f1)
+TS=$(date +%s)
+BODY="{\"type\":\"purchase.completed\",\"eventId\":\"evt-$TS\",\"userId\":\"$USER\",\"occurredAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+
+# The signature covers "{timestamp}.{body}" -- signing the body alone would leave
+# the freshness window unauthenticated and the request replayable forever.
+SIG=$(printf '%s' "$TS.$BODY" | openssl dgst -sha512 -hmac "$SECRET" -r | cut -d' ' -f1)
 
 curl -X POST http://localhost:3000/events \
   -H "content-type: application/json" \
   -H "x-signature: $SIG" \
-  -H "x-timestamp: $(date +%s)" \
+  -H "x-timestamp: $TS" \
   -d "$BODY"
 
 curl http://localhost:3000/users/$USER/achievements

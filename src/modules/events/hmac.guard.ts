@@ -16,6 +16,8 @@ const HEX_PATTERN = /^[0-9a-f]+$/i;
 /**
  * Verifies that a request was signed by the storefront.
  *
+ * The signature covers `{timestamp}.{rawBody}`.
+ *
  * This is the money boundary: an unverified ingest endpoint lets anyone fabricate
  * purchases and draw cashback until the provider balance is empty. Rejects a bad
  * signature, and a timestamp outside the freshness window so a captured payload
@@ -53,7 +55,14 @@ export class HmacGuard implements CanActivate {
       throw new UnauthorizedException();
     }
 
-    const expected = createHmac('sha512', this.config.secret).update(rawBody).digest('hex');
+    // The timestamp is part of the signed payload, not just a header. Signing the
+    // body alone would leave the freshness window unauthenticated: a captured
+    // request could be replayed indefinitely by rewriting x-timestamp, and the
+    // original signature would still verify.
+    const expected = createHmac('sha512', this.config.secret)
+      .update(`${timestampHeader}.`)
+      .update(rawBody)
+      .digest('hex');
     const expectedBuffer = Buffer.from(expected, 'hex');
     const providedBuffer = Buffer.from(signature, 'hex');
     // timingSafeEqual throws on unequal lengths rather than returning false, so

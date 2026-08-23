@@ -52,10 +52,13 @@ export class EvaluateProcessor extends WorkerHost {
       .findOneOrFail({ where: { id: userId } });
 
     for (const name of result.unlockedAchievementNames) {
-      this.events.emit(ACHIEVEMENT_UNLOCKED, new AchievementUnlockedEvent(name, user));
+      await this.events.emitAsync(ACHIEVEMENT_UNLOCKED, new AchievementUnlockedEvent(name, user));
     }
     for (const badge of result.unlockedBadges) {
-      this.events.emit(BADGE_UNLOCKED, new BadgeUnlockedEvent(badge.name, user, badge.payoutId));
+      await this.events.emitAsync(
+        BADGE_UNLOCKED,
+        new BadgeUnlockedEvent(badge.name, user, badge.payoutId),
+      );
     }
   }
 }

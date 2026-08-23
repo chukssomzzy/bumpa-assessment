@@ -15,12 +15,13 @@ const USER = '11111111-1111-4111-8111-111111111111';
 function post(body: unknown, secretOverride?: string) {
   const raw = JSON.stringify(body);
   const secret = secretOverride ?? SECRET;
+  const timestamp = Math.floor(Date.now() / 1000);
   return fetch(`${API}/events`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-signature': createHmac('sha512', secret).update(raw).digest('hex'),
-      'x-timestamp': String(Math.floor(Date.now() / 1000)),
+      'x-signature': createHmac('sha512', secret).update(`${timestamp}.${raw}`).digest('hex'),
+      'x-timestamp': String(timestamp),
     },
     body: raw,
   });
