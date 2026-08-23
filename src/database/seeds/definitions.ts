@@ -5,6 +5,11 @@ import type { AchievementDefinition, BadgeDefinition } from '../../achievements/
  *
  * Adding a tier or a badge level is an edit here plus a re-seed: no code change,
  * which is the extensibility the brief asks for.
+ *
+ * The ladder runs to twelve tiers because the badge ladder tops out at twelve
+ * achievements: a shorter ladder would make Elite — and every cashback above
+ * Beginner — permanently unreachable. Tier count and the top badge requirement
+ * must stay in step, which `definitions.spec.ts` asserts.
  */
 export const ACHIEVEMENT_DEFINITIONS: AchievementDefinition[] = [
   {
@@ -16,12 +21,20 @@ export const ACHIEVEMENT_DEFINITIONS: AchievementDefinition[] = [
     tier: 1,
   },
   {
+    key: 'three_purchases',
+    name: '3 Purchases',
+    groupKey: 'purchases',
+    metric: 'purchase_count',
+    threshold: 3,
+    tier: 2,
+  },
+  {
     key: 'five_purchases',
     name: '5 Purchases',
     groupKey: 'purchases',
     metric: 'purchase_count',
     threshold: 5,
-    tier: 2,
+    tier: 3,
   },
   {
     key: 'ten_purchases',
@@ -29,7 +42,71 @@ export const ACHIEVEMENT_DEFINITIONS: AchievementDefinition[] = [
     groupKey: 'purchases',
     metric: 'purchase_count',
     threshold: 10,
-    tier: 3,
+    tier: 4,
+  },
+  {
+    key: 'fifteen_purchases',
+    name: '15 Purchases',
+    groupKey: 'purchases',
+    metric: 'purchase_count',
+    threshold: 15,
+    tier: 5,
+  },
+  {
+    key: 'twenty_purchases',
+    name: '20 Purchases',
+    groupKey: 'purchases',
+    metric: 'purchase_count',
+    threshold: 20,
+    tier: 6,
+  },
+  {
+    key: 'twentyfive_purchases',
+    name: '25 Purchases',
+    groupKey: 'purchases',
+    metric: 'purchase_count',
+    threshold: 25,
+    tier: 7,
+  },
+  {
+    key: 'fifty_purchases',
+    name: '50 Purchases',
+    groupKey: 'purchases',
+    metric: 'purchase_count',
+    threshold: 50,
+    tier: 8,
+  },
+  {
+    key: 'seventyfive_purchases',
+    name: '75 Purchases',
+    groupKey: 'purchases',
+    metric: 'purchase_count',
+    threshold: 75,
+    tier: 9,
+  },
+  {
+    key: 'hundred_purchases',
+    name: '100 Purchases',
+    groupKey: 'purchases',
+    metric: 'purchase_count',
+    threshold: 100,
+    tier: 10,
+  },
+  {
+    key: 'onefifty_purchases',
+    name: '150 Purchases',
+    groupKey: 'purchases',
+    metric: 'purchase_count',
+    threshold: 150,
+    tier: 11,
+  },
+  {
+    key: 'twohundred_purchases',
+    name: '200 Purchases',
+    groupKey: 'purchases',
+    metric: 'purchase_count',
+    threshold: 200,
+    tier: 12,
   },
 ];
 

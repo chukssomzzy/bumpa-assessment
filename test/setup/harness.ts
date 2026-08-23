@@ -6,7 +6,7 @@ import type { Queue } from 'bullmq';
 import { DataSource } from 'typeorm';
 import { Clock } from '../../src/common/clock';
 import { EVALUATE_QUEUE, PAYOUT_QUEUE } from '../../src/common/queues';
-import { seed } from '../../src/database/seed';
+import { seedDemoUsers } from '../../src/database/seed';
 import { FakePaymentProvider } from '../../src/payments/fake.provider';
 import { MutableClock } from './mutable-clock';
 import { TestAppModule } from './test-app.module';
@@ -60,13 +60,13 @@ export async function createTestApp(): Promise<TestContext> {
 
 /**
  * Clears all per-user state and restores the seeded demo users. Definitions are
- * re-upserted by the same seed the deployed path uses.
+ * deliberately left alone: they are reference data, not fixtures.
  */
 export async function resetDatabase(dataSource: DataSource): Promise<void> {
   await dataSource.query(
     `TRUNCATE "user_achievements", "user_badges", "payouts", "processed_events", "user_progress", "users" RESTART IDENTITY CASCADE`,
   );
-  await seed(dataSource);
+  await seedDemoUsers(dataSource);
 }
 
 export async function clearQueues(ctx: TestContext): Promise<void> {
@@ -86,14 +86,12 @@ export function sign(
   };
 }
 
-/** Polls until both queues are idle, so assertions see settled state. */
-export async function drainQueues(ctx: TestContext, timeoutMs = 20_000): Promise<void> {
+async function drain(queues: Queue[], timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const counts = await Promise.all([
-      ctx.evaluateQueue.getJobCounts('waiting', 'active', 'delayed'),
-      ctx.payoutQueue.getJobCounts('waiting', 'active', 'delayed'),
-    ]);
+    const counts = await Promise.all(
+      queues.map((q) => q.getJobCounts('waiting', 'active', 'delayed')),
+    );
     const outstanding = counts.reduce(
       (total, c) => total + (c.waiting ?? 0) + (c.active ?? 0) + (c.delayed ?? 0),
       0,
@@ -103,6 +101,17 @@ export async function drainQueues(ctx: TestContext, timeoutMs = 20_000): Promise
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+
+/** Waits for evaluation work only. Use when payout dispatch is not under test. */
+export const drainEvaluateQueue = (ctx: TestContext, timeoutMs = 20_000): Promise<void> =>
+  drain([ctx.evaluateQueue], timeoutMs);
+
+export const drainPayoutQueue = (ctx: TestContext, timeoutMs = 20_000): Promise<void> =>
+  drain([ctx.payoutQueue], timeoutMs);
+
+/** Polls until both queues are idle, so assertions see settled state. */
+export const drainQueues = (ctx: TestContext, timeoutMs = 20_000): Promise<void> =>
+  drain([ctx.evaluateQueue, ctx.payoutQueue], timeoutMs);
 
 export async function waitFor(
   predicate: () => Promise<boolean>,
