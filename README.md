@@ -236,9 +236,18 @@ The API is then on `http://localhost:3000`.
 
 ### Sending a test purchase
 
+The seed creates two demo customers with test bank details, so this runs on a clean checkout:
+
+| Customer | Id |
+|---|---|
+| Ada Demo | `11111111-1111-4111-8111-111111111111` |
+| Bola Demo | `22222222-2222-4222-8222-222222222222` |
+
 ```bash
-BODY='{"type":"purchase.completed","eventId":"evt-001","userId":"<uuid>","occurredAt":"2026-08-23T10:00:00Z"}'
-SIG=$(printf '%s' "$BODY" | openssl dgst -sha512 -hmac "$WEBHOOK_SECRET" -r | cut -d' ' -f1)
+USER=11111111-1111-4111-8111-111111111111
+SECRET=$(grep '^WEBHOOK_SECRET=' .env | cut -d= -f2-)
+BODY="{\"type\":\"purchase.completed\",\"eventId\":\"evt-$(date +%s)\",\"userId\":\"$USER\",\"occurredAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha512 -hmac "$SECRET" -r | cut -d' ' -f1)
 
 curl -X POST http://localhost:3000/events \
   -H "content-type: application/json" \
@@ -246,8 +255,11 @@ curl -X POST http://localhost:3000/events \
   -H "x-timestamp: $(date +%s)" \
   -d "$BODY"
 
-curl http://localhost:3000/users/<uuid>/achievements
+curl http://localhost:3000/users/$USER/achievements
 ```
+
+Repeat the POST with a fresh `eventId` to advance the counter; the fifth purchase unlocks
+"5 Purchases". Re-sending the *same* `eventId` is a no-op, by design.
 
 ---
 
@@ -271,15 +283,25 @@ exercisable end to end against test keys.
 ## Running tests
 
 ```bash
-npm test              # unit — pure logic, no I/O
-npm run test:e2e      # integration — Testcontainers spins real Postgres + Redis
-npm run test:cov      # coverage
+npm test                  # unit — pure domain logic, no I/O
+npm run test:integration  # Testcontainers: real Postgres + Redis
+npm run test:e2e          # end-to-end against the composed stack
+npm run test:cov          # coverage of the domain layer
 ```
+
+Three tiers, deliberately separated:
+
+| Tier | Covers | Runs on push |
+|---|---|---|
+| `test` | Pure rules functions, no I/O | yes |
+| `test:integration` | Repositories, processors, sweeper, concurrency | yes |
+| `test:e2e` | The composed stack over HTTP, real provider test keys | no — manual dispatch |
 
 Integration tests run against **real** Postgres and Redis rather than sqlite or mocks, because the
 design rests on three Postgres behaviours — an exclusive row lock, `ON CONFLICT DO NOTHING`, and a
-`DISTINCT ON` per-group query. Testing against anything else would test the ORM, not the design.
-Docker must be running; the first run pulls images.
+per-group ordering query. Testing against anything else would test the ORM, not the design. Docker
+must be running; the first run pulls images. They boot a module graph containing both producers and
+processors, so enqueued work is consumed in-process — production keeps those graphs apart.
 
 What the suite covers:
 
