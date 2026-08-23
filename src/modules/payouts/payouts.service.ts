@@ -117,11 +117,38 @@ export class PayoutsService {
       ],
     });
 
+    let requeued = 0;
     for (const payout of stale) {
-      await this.queue.add('payout', { payoutId: payout.id }, { jobId: payout.id });
+      if (await this.requeue(payout.id)) requeued += 1;
     }
 
-    return stale.length;
+    return requeued;
+  }
+
+  /**
+   * Re-enqueues one payout, returning whether a job was actually added.
+   *
+   * The job id is the payout id, which is what stops two workers dispatching the
+   * same payout at once. But BullMQ ignores `add()` while a job with that id
+   * still exists in ANY state, and completed jobs are retained — so a payout left
+   * `processing` by an ambiguous outcome would be stranded forever, since its job
+   * completed cleanly and kept the id. Dropping the finished job first restores
+   * the recovery path without weakening the dedupe.
+   *
+   * An active job cannot be removed; that failure is the correct answer — the
+   * payout is already being dispatched, so there is nothing to re-enqueue.
+   */
+  private async requeue(payoutId: string): Promise<boolean> {
+    const existing = await this.queue.getJob(payoutId);
+    if (existing) {
+      try {
+        await existing.remove();
+      } catch {
+        return false;
+      }
+    }
+    await this.queue.add('payout', { payoutId }, { jobId: payoutId });
+    return true;
   }
 
   /** Resolves a transfer recipient, caching the code on the user row so later payouts skip the call. */

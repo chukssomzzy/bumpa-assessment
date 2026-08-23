@@ -46,6 +46,21 @@ badge; earning a badge pays the customer ₦300.
 Signed webhook ingest. Verifies an HMAC signature, then acknowledges with `202` and hands the work
 to a queue.
 
+### `GET /health` and `GET /health/ready`
+
+Liveness and readiness. `/health` is dependency-free and cheap enough for a container probe;
+`/health/ready` checks Postgres and Redis and returns `503` with a per-dependency breakdown when
+either is down. Both are used as Docker healthchecks.
+
+### Errors
+
+Failures return a consistent envelope. Success payloads are deliberately **not** wrapped, because the
+achievements response shape is part of the specified contract:
+
+```json
+{ "success": false, "statusCode": 401, "message": "Unauthorized" }
+```
+
 ### Domain events
 
 | Event | Payload |
