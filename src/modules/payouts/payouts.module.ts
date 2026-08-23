@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Clock, SystemClock } from '../../common/clock';
 import { PAYOUT_QUEUE } from '../../common/queues';
+import { PAYOUT_JOB_OPTIONS } from '../../common/queue.constants';
 import { PaymentsModule } from '../payments/payments.module';
 import { UsersModule } from '../users/users.module';
 import { PayoutEntity } from './payout.entity';
@@ -13,7 +14,7 @@ import { PayoutsService } from './payouts.service';
     UsersModule,
     PaymentsModule,
     TypeOrmModule.forFeature([PayoutEntity]),
-    BullModule.registerQueue({ name: PAYOUT_QUEUE }),
+    BullModule.registerQueue({ name: PAYOUT_QUEUE, defaultJobOptions: PAYOUT_JOB_OPTIONS }),
   ],
   providers: [PayoutsService, { provide: Clock, useClass: SystemClock }],
   exports: [PayoutsService, BullModule, TypeOrmModule],

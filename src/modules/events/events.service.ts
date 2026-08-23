@@ -18,9 +18,13 @@ export class EventsService {
    * Validates the payload, confirms the user exists, and enqueues an evaluation
    * job keyed by event id so duplicate deliveries collapse.
    *
+   * `requestId` carries the HTTP request's correlation id into the job so the
+   * worker's logs can be traced back to it; optional so a caller without one
+   * (a test, a future non-HTTP producer) still type-checks.
+   *
    * Throws 422 for a malformed payload or an unknown user.
    */
-  async accept(body: unknown): Promise<{ accepted: true }> {
+  async accept(body: unknown, requestId?: string): Promise<{ accepted: true }> {
     const result = purchaseEventSchema.safeParse(body);
     if (!result.success) {
       throw new UnprocessableEntityException('invalid purchase event payload');
@@ -36,7 +40,7 @@ export class EventsService {
     // crash before this enqueue stays recoverable by the producer's retry.
     await this.queue.add(
       'evaluate',
-      { eventId: event.eventId, userId: event.userId, occurredAt: event.occurredAt },
+      { eventId: event.eventId, userId: event.userId, occurredAt: event.occurredAt, requestId },
       { jobId: event.eventId },
     );
 

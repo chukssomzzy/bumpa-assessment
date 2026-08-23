@@ -1,4 +1,5 @@
-import { Body, Controller, HttpCode, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { HmacGuard } from './hmac.guard';
 import { EventsService } from './events.service';
 
@@ -15,7 +16,10 @@ export class EventsController {
    */
   @Post()
   @HttpCode(202)
-  ingest(@Body() body: unknown): Promise<{ accepted: true }> {
-    return this.events.accept(body);
+  ingest(
+    @Body() body: unknown,
+    @Req() request: Request & { id?: string },
+  ): Promise<{ accepted: true }> {
+    return this.events.accept(body, request.id);
   }
 }
