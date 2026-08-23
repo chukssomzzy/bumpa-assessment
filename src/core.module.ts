@@ -5,6 +5,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { allConfig, databaseConfig, redisConfig } from './config/configuration';
 import { entities, migrations } from './database/data-source';
+import { DefinitionsGuard } from './database/definitions.guard';
 
 /** Config, database and queue connections shared by both runtime roles. */
 @Module({
@@ -34,5 +35,6 @@ import { entities, migrations } from './database/data-source';
       }),
     }),
   ],
+  providers: [DefinitionsGuard],
 })
 export class CoreModule {}
