@@ -133,11 +133,13 @@ describe('PayoutsService', () => {
       expect((await getPayout(ctx, id)).status).toBe('succeeded');
     });
 
-    it('leaves a retryable failure non-terminal and records the attempt', async () => {
+    it('leaves a retryable failure non-terminal, records the attempt, and throws so BullMQ retries it', async () => {
       ctx.provider.script({ status: 'failed', reason: 'temporary outage', retryable: true });
       const id = await insertPayout(ctx);
 
-      await payouts.dispatch(id);
+      // A retryable failure must throw after persisting state, so the queue's
+      // own `attempts`/backoff engage instead of the job completing cleanly.
+      await expect(payouts.dispatch(id)).rejects.toThrow('temporary outage');
 
       const row = await getPayout(ctx, id);
       expect(row.status).not.toBe('failed');
@@ -160,8 +162,15 @@ describe('PayoutsService', () => {
         ctx.provider.script({ status: 'failed', reason: 'temporary outage', retryable: true });
       }
 
+      // Every attempt but the last is retryable, so it throws (BullMQ's retry
+      // signal) after persisting `pending`; the final attempt exhausts the
+      // ceiling and returns normally with the row terminally failed instead.
       for (let i = 0; i < MAX_ATTEMPTS; i++) {
-        await payouts.dispatch(id);
+        if (i < MAX_ATTEMPTS - 1) {
+          await expect(payouts.dispatch(id)).rejects.toThrow('temporary outage');
+        } else {
+          await payouts.dispatch(id);
+        }
       }
 
       const row = await getPayout(ctx, id);

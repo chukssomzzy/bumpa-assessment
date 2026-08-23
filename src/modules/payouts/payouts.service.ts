@@ -28,38 +28,47 @@ export class PayoutsService {
   /**
    * Dispatches one pending payout.
    *
-   * Resolves a transfer recipient, transfers, and moves the payout to a terminal
-   * state. On an unknown outcome it reconciles by reference before considering a
-   * retry, so an already-completed transfer is never repeated. Becomes terminally
-   * failed once the configured attempt limit is reached.
+   * Reconciles by reference BEFORE consulting the attempts ceiling: a previous
+   * call may have left the outcome ambiguous (crash, timeout, `unknown`), and
+   * only a definitive answer may ever settle a terminal or fresh-retry
+   * decision. If reconciliation is itself `unknown`, the payout must stay
+   * non-terminal no matter how many attempts have run — marking it failed
+   * without ever looking it up risks recording a transfer that actually
+   * landed as failed, and an operator re-driving it would double-pay.
+   *
+   * A retryable failure throws after persisting `pending`, so BullMQ's own
+   * `attempts`/backoff engage instead of relying solely on the 5-minute
+   * sweeper. Non-retryable failures and terminal states return normally —
+   * throwing there would only burn a pointless retry.
    */
   async dispatch(payoutId: string): Promise<void> {
     const payout = await this.payoutsRepo.findOne({ where: { id: payoutId } });
     if (!payout || TERMINAL_STATUSES.includes(payout.status)) return;
 
     const maxAttempts = this.config.maxAttempts ?? 5;
-    if (payout.attempts >= maxAttempts) {
-      await this.markFailed(payout.id, payout.lastError ?? 'max attempts reached');
-      return;
-    }
 
-    // A non-zero attempt count with a non-terminal status means a previous call
-    // left the outcome ambiguous (crash, timeout, `unknown`). Reconciling by
-    // reference before transferring is what makes a second transfer impossible.
     if (payout.attempts > 0) {
       const reconciled = await this.provider.findTransfer(payout.providerReference);
       if (reconciled?.status === 'succeeded') {
-        await this.markSucceeded(payout.id, reconciled.reference);
+        await this.markSucceeded(payout.id);
         return;
       }
       // An inconclusive lookup carries the same ambiguity as the original
-      // outcome: money may still have moved, so a fresh transfer is not safe.
+      // outcome: money may still have moved, so it must never be treated as
+      // if the attempt ceiling had been reached — that would terminally fail
+      // a transfer that may in fact have succeeded.
       if (reconciled?.status === 'unknown') {
         await this.payoutsRepo.update(payout.id, { lastError: reconciled.reason });
         return;
       }
-      // `null` (no such transfer) or a definitive `failed` both mean it is safe
-      // to fall through and attempt a real transfer below.
+      // `null` (no such transfer) or a definitive `failed` both mean it is
+      // safe to fall through — to the attempts ceiling below, and if still
+      // under it, to attempt a real transfer.
+    }
+
+    if (payout.attempts >= maxAttempts) {
+      await this.markFailed(payout.id, payout.lastError ?? 'max attempts reached');
+      return;
     }
 
     let recipientCode: string;
@@ -67,7 +76,17 @@ export class PayoutsService {
       const user = await this.usersRepo.findOneByOrFail({ id: payout.userId });
       recipientCode = await this.resolveRecipient(user);
     } catch (err) {
-      await this.recordRetryableFailure(payout.id, payout.attempts, maxAttempts, message(err));
+      const reason = message(err);
+      const exhausted = await this.recordRetryableFailure(
+        payout.id,
+        payout.attempts,
+        maxAttempts,
+        reason,
+      );
+      // Same contract as a retryable transfer failure: throw so BullMQ retries
+      // with its backoff. Returning normally would complete the job and leave
+      // recovery to the sweeper alone.
+      if (!exhausted) throw new Error(`payout recipient resolution failed (retryable): ${reason}`);
       return;
     }
 
@@ -84,14 +103,17 @@ export class PayoutsService {
 
     switch (result.status) {
       case 'succeeded':
-        await this.markSucceeded(payout.id, result.reference);
+        await this.markSucceeded(payout.id);
         return;
       case 'failed':
         if (result.retryable && attempts < maxAttempts) {
           await this.payoutsRepo.update(payout.id, { status: 'pending', lastError: result.reason });
-        } else {
-          await this.markFailed(payout.id, result.reason);
+          // Persisted, so the state is safe; now throw so BullMQ's `attempts`/
+          // backoff actually engage instead of the job completing cleanly and
+          // leaving retry entirely to the 5-minute sweeper.
+          throw new Error(`payout dispatch failed (retryable): ${result.reason}`);
         }
+        await this.markFailed(payout.id, result.reason);
         return;
       case 'unknown':
         // Leave the row `processing`: the next dispatch reconciles by reference
@@ -159,26 +181,32 @@ export class PayoutsService {
     return code;
   }
 
+  /** Records a retryable failure. Returns whether the attempt ceiling is now exhausted. */
   private async recordRetryableFailure(
     payoutId: string,
     priorAttempts: number,
     maxAttempts: number,
     reason: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const attempts = priorAttempts + 1;
-    if (attempts >= maxAttempts) {
-      await this.payoutsRepo.update(payoutId, { status: 'failed', attempts, lastError: reason });
-    } else {
-      await this.payoutsRepo.update(payoutId, { status: 'pending', attempts, lastError: reason });
-    }
+    const exhausted = attempts >= maxAttempts;
+    await this.payoutsRepo.update(payoutId, {
+      status: exhausted ? 'failed' : 'pending',
+      attempts,
+      lastError: reason,
+    });
+    return exhausted;
   }
 
-  private async markSucceeded(payoutId: string, reference: string): Promise<void> {
-    await this.payoutsRepo.update(payoutId, {
-      status: 'succeeded',
-      providerReference: reference,
-      lastError: null,
-    });
+  /**
+   * `providerReference` is never overwritten here: it is the idempotency key
+   * presented to the provider (and carries a unique index), so it must stay
+   * exactly what was sent for the row's lifetime. Replacing it with whatever
+   * the provider echoes back would break the reconcile-by-reference lookup a
+   * retry after a crash depends on.
+   */
+  private async markSucceeded(payoutId: string): Promise<void> {
+    await this.payoutsRepo.update(payoutId, { status: 'succeeded', lastError: null });
   }
 
   private async markFailed(payoutId: string, reason: string): Promise<void> {

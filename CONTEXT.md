@@ -57,6 +57,30 @@ logged at `error`; 4xx is expected traffic and logged at nothing.
 remaining_to_unlock_next_badge }` raw — that shape is the graded contract for this assessment, and
 a `{ data: ... }` wrapper would break it. Do not add a response-wrapping interceptor.
 
+## Money-path invariants
+
+Read these before touching `payouts` or the evaluate transaction.
+
+- **One payout per badge**, enforced by `UNIQUE(user_id, badge_key)` — not by application logic.
+- **A badge cannot exist without a payout row.** Both are written in the same transaction, which is
+  what lets the `payouts` table serve as the outbox. No generic outbox table exists.
+- **`providerReference` is `{userId}:{badgeKey}` and never changes.** It is the idempotency key and
+  the only handle for reconciling an ambiguous transfer. Never overwrite it with a provider-returned
+  value.
+- **An `unknown` provider outcome is never terminal.** Money may have moved. Reconcile by reference
+  before any retry, and reconcile *before* checking the attempt ceiling — otherwise a transfer that
+  actually succeeded gets recorded as failed, and re-driving it double-pays.
+- **A retryable failure throws**, so BullMQ's backoff engages. Returning normally completes the job
+  and silently leaves recovery to the sweeper alone.
+- **The sweeper drops a finished job before re-adding it.** BullMQ ignores `add()` while a job with
+  that id exists in any state, and completed jobs are retained — so a plain re-add is a silent no-op
+  and strands the payout forever.
+- **`dispatch` is a read-modify-write with no row lock.** Safe only because the job id is the payout
+  id, so BullMQ gives one consumer at a time, and `maxStalledCount: 0` stops a stalled job being
+  re-run alongside the original. Closing this properly would need a lease column and a migration.
+- **The HMAC covers `{timestamp}.{rawBody}`.** Signing the body alone leaves the freshness window
+  unauthenticated and the request replayable forever.
+
 ## The three test tiers
 
 - **Unit** (`src/**/*.spec.ts`, `npm test`): pure functions and anything mockable without a real

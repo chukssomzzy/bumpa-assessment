@@ -26,6 +26,19 @@ const isEnvelope = (value: unknown): value is PaystackEnvelope<unknown> =>
 
 /** Statuses Paystack reports for a completed transfer. */
 const SUCCESS_TRANSFER_STATUSES = new Set(['success']);
+/** A reversal is definitive: the funds are back, so retrying can never help. */
+const FAILED_TRANSFER_STATUSES = new Set(['failed', 'reversed']);
+/**
+ * Still in flight on Paystack's side (e.g. awaiting OTP confirmation). Not a
+ * terminal outcome, but also not a lost call — mapped to `unknown` (the port
+ * has no third state) with a `reason` that says so, so the caller reconciles
+ * again rather than reading it as a dropped network call.
+ *
+ * A production deployment would settle these via Paystack's transfer
+ * webhook instead of polling `findTransfer`; this mapping is the fallback
+ * for when that webhook hasn't landed yet.
+ */
+const PENDING_TRANSFER_STATUSES = new Set(['pending', 'otp']);
 
 /**
  * Paystack adapter.
@@ -103,10 +116,7 @@ export class PaystackProvider extends PaymentProvider {
     }
 
     const body = await this.parseBody<TransferData>(res);
-    if (body?.status === true && SUCCESS_TRANSFER_STATUSES.has(body.data?.status ?? '')) {
-      return { status: 'succeeded', reference: body.data?.reference ?? request.reference };
-    }
-    return { status: 'unknown', reason: body?.message ?? 'unrecognised transfer response' };
+    return this.mapTransferStatus(body, request.reference);
   }
 
   async findTransfer(reference: string): Promise<TransferResult | null> {
@@ -128,10 +138,43 @@ export class PaystackProvider extends PaymentProvider {
     }
 
     const body = await this.parseBody<TransferData>(res);
-    if (body?.status === true && SUCCESS_TRANSFER_STATUSES.has(body.data?.status ?? '')) {
-      return { status: 'succeeded', reference: body.data?.reference ?? reference };
+    return this.mapTransferStatus(body, reference);
+  }
+
+  /**
+   * Maps a Paystack transfer status onto the port's three-state outcome.
+   *
+   * `succeeded`/`failed` are terminal, so both require `status: true` on the
+   * envelope — the same trust bar the pre-existing success check used. An
+   * untrustworthy envelope (`status: false`, or missing) must never be read
+   * as a definitive `failed` either: that would let a garbled response mark
+   * a payout terminally failed the same way an unreconciled attempts-ceiling
+   * check could (see `PayoutsService.dispatch`), so it falls to `unknown`
+   * instead. `pending`/`otp` fall to `unknown` regardless — they're not
+   * terminal on either side of the envelope check.
+   */
+  private mapTransferStatus(
+    body: PaystackEnvelope<TransferData> | null,
+    fallbackReference: string,
+  ): TransferResult {
+    const status = body?.data?.status;
+    if (body?.status === true && status && SUCCESS_TRANSFER_STATUSES.has(status)) {
+      return { status: 'succeeded', reference: body.data?.reference ?? fallbackReference };
     }
-    return { status: 'unknown', reason: body?.message ?? 'unrecognised lookup response' };
+    if (body?.status === true && status && FAILED_TRANSFER_STATUSES.has(status)) {
+      return {
+        status: 'failed',
+        reason: body.message ?? `paystack transfer ${status}`,
+        retryable: false,
+      };
+    }
+    if (status && PENDING_TRANSFER_STATUSES.has(status)) {
+      return {
+        status: 'unknown',
+        reason: `paystack transfer ${status}: awaiting provider-side settlement, not a lost call`,
+      };
+    }
+    return { status: 'unknown', reason: body?.message ?? 'unrecognised transfer response' };
   }
 
   private async request<T>(
