@@ -1,4 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto';
+import { Client } from 'pg';
 
 /**
  * Drives the composed stack over HTTP — api, worker, migrate, postgres, redis —
@@ -6,11 +7,36 @@ import { createHmac, randomUUID } from 'node:crypto';
  * credentials and minutes rather than seconds.
  *
  * Prerequisites: `docker compose up -d --wait`, and WEBHOOK_SECRET matching the
- * stack's .env.
+ * stack's .env (loaded automatically by `test/setup/e2e-env.ts`).
+ *
+ * Provisions its own user per run rather than using a seeded demo user. The
+ * assertions below are absolute — "starts at Beginner", "ends at Intermediate"
+ * — so against a long-lived stack a shared user carries state from the previous
+ * run and the suite passes exactly once, then fails forever on a database that
+ * is behaving perfectly correctly.
  */
 const API = process.env.API_URL ?? 'http://localhost:3000';
 const SECRET = process.env.WEBHOOK_SECRET ?? 'dev-webhook-secret-change-me';
-const USER = '11111111-1111-4111-8111-111111111111';
+const USER = randomUUID();
+const DATABASE_URL = process.env.E2E_DATABASE_URL ?? 'postgres://bumpa:bumpa@localhost:5432/bumpa';
+
+let db: Client;
+
+beforeAll(async () => {
+  db = new Client({ connectionString: DATABASE_URL });
+  await db.connect();
+  // 044/0000000000 is a combination Paystack test mode will actually resolve;
+  // most will not. See DEMO_USERS in `src/database/seeds/definitions.ts`.
+  await db.query(
+    `INSERT INTO users (id, name, email, bank_code, account_number)
+     VALUES ($1, $2, $3, '044', '0000000000') ON CONFLICT (id) DO NOTHING`,
+    [USER, 'E2E Cashback', `e2e-cashback-${USER}@example.test`],
+  );
+});
+
+afterAll(async () => {
+  await db?.end();
+});
 
 function post(body: unknown, secretOverride?: string) {
   const raw = JSON.stringify(body);
