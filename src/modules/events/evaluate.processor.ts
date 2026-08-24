@@ -1,11 +1,11 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { Job } from 'bullmq';
+import { UseCls } from 'nestjs-cls';
 import { PinoLogger } from 'nestjs-pino';
-import { DataSource } from 'typeorm';
 import { EVALUATE_QUEUE, type EvaluateJob } from '../../common/queues';
 import { AchievementsService } from '../achievements/achievements.service';
-import { UserEntity } from '../users/user.entity';
+import { UserRepository } from '../users/repositories/user.repository';
 import {
   ACHIEVEMENT_UNLOCKED,
   AchievementUnlockedEvent,
@@ -25,7 +25,7 @@ export class EvaluateProcessor extends WorkerHost {
   constructor(
     private readonly achievements: AchievementsService,
     private readonly events: EventEmitter2,
-    private readonly dataSource: DataSource,
+    private readonly users: UserRepository,
     // Plain `PinoLogger`, not `@InjectPinoLogger(name)`: that decorator's
     // per-context provider is only registered for classes that were already
     // `require`d by the time `LoggerModule.forRootAsync` runs, which is an
@@ -37,6 +37,12 @@ export class EvaluateProcessor extends WorkerHost {
     this.logger.setContext(EvaluateProcessor.name);
   }
 
+  // BullMQ jobs run outside any HTTP request, so unlike a controller method
+  // there is no ambient CLS context here for `@Transactional()` (inside
+  // `achievements.applyPurchaseEvent`) to hang the transaction's EntityManager
+  // off. `@UseCls()` opens one for the duration of this job, same as the HTTP
+  // middleware does per request.
+  @UseCls()
   async process(job: Job<EvaluateJob>): Promise<void> {
     const { eventId, userId, requestId } = job.data;
     // Ties this job's log lines back to the HTTP request that enqueued it,
@@ -47,9 +53,7 @@ export class EvaluateProcessor extends WorkerHost {
       return;
     }
 
-    const user = await this.dataSource
-      .getRepository(UserEntity)
-      .findOneOrFail({ where: { id: userId } });
+    const user = await this.users.findByIdOrFail(userId);
 
     for (const name of result.unlockedAchievementNames) {
       await this.events.emitAsync(ACHIEVEMENT_UNLOCKED, new AchievementUnlockedEvent(name, user));

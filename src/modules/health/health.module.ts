@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { EventsModule } from '../events/events.module';
 import { HealthController } from './health.controller';
+import { HealthRepository } from './repositories/health.repository';
 
 /**
  * API-only (see `AppModule`): the worker has no HTTP listener to probe.
@@ -11,5 +12,6 @@ import { HealthController } from './health.controller';
 @Module({
   imports: [EventsModule],
   controllers: [HealthController],
+  providers: [HealthRepository],
 })
 export class HealthModule {}
