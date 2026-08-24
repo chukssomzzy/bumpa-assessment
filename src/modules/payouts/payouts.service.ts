@@ -1,28 +1,35 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
+import { PinoLogger } from 'nestjs-pino';
 import type { ConfigType } from '@nestjs/config';
-import { InjectRepository } from '@nestjs/typeorm';
 import type { Queue } from 'bullmq';
-import { LessThan, Repository } from 'typeorm';
 import { Clock } from '../../common/clock';
 import { PAYOUT_QUEUE, type PayoutJob } from '../../common/queues';
 import { paymentsConfig } from '../../config/configuration';
 import { PaymentProvider } from '../payments/payment-provider';
-import { UserEntity } from '../users/user.entity';
-import { PayoutEntity, type PayoutStatus } from './payout.entity';
+import { UserRepository } from '../users/repositories/user.repository';
+import type { UserEntity } from '../users/user.entity';
+import { type PayoutStatus } from './payout.entity';
+import { PayoutRepository } from './repositories/payout.repository';
 
 const TERMINAL_STATUSES: readonly PayoutStatus[] = ['succeeded', 'failed'];
 
 @Injectable()
 export class PayoutsService {
   constructor(
-    @InjectRepository(PayoutEntity) private readonly payoutsRepo: Repository<PayoutEntity>,
-    @InjectRepository(UserEntity) private readonly usersRepo: Repository<UserEntity>,
+    private readonly payoutsRepo: PayoutRepository,
+    private readonly usersRepo: UserRepository,
     @InjectQueue(PAYOUT_QUEUE) private readonly queue: Queue<PayoutJob>,
     private readonly provider: PaymentProvider,
     private readonly clock: Clock,
     @Inject(paymentsConfig.KEY)
     private readonly config: ConfigType<typeof paymentsConfig>,
+    // Every non-success outcome below is logged as well as persisted. Recording
+    // a failure only in `payouts.last_error` makes a stuck money path invisible
+    // to anything but a manual query — which is exactly how a seed carrying bank
+    // details Paystack could not resolve went unnoticed while every payout
+    // silently retried.
+    private readonly logger: PinoLogger,
   ) {}
 
   /**
@@ -42,7 +49,7 @@ export class PayoutsService {
    * throwing there would only burn a pointless retry.
    */
   async dispatch(payoutId: string): Promise<void> {
-    const payout = await this.payoutsRepo.findOne({ where: { id: payoutId } });
+    const payout = await this.payoutsRepo.findById(payoutId);
     if (!payout || TERMINAL_STATUSES.includes(payout.status)) return;
 
     const maxAttempts = this.config.maxAttempts ?? 5;
@@ -50,7 +57,7 @@ export class PayoutsService {
     if (payout.attempts > 0) {
       const reconciled = await this.provider.findTransfer(payout.providerReference);
       if (reconciled?.status === 'succeeded') {
-        await this.markSucceeded(payout.id);
+        await this.payoutsRepo.markSucceeded(payout.id);
         return;
       }
       // An inconclusive lookup carries the same ambiguity as the original
@@ -58,7 +65,11 @@ export class PayoutsService {
       // if the attempt ceiling had been reached — that would terminally fail
       // a transfer that may in fact have succeeded.
       if (reconciled?.status === 'unknown') {
-        await this.payoutsRepo.update(payout.id, { lastError: reconciled.reason });
+        this.logger.warn(
+          { payoutId: payout.id, reference: payout.providerReference, reason: reconciled.reason },
+          'payout reconciliation inconclusive; leaving non-terminal',
+        );
+        await this.payoutsRepo.recordInconclusiveOutcome(payout.id, reconciled.reason);
         return;
       }
       // `null` (no such transfer) or a definitive `failed` both mean it is
@@ -67,20 +78,30 @@ export class PayoutsService {
     }
 
     if (payout.attempts >= maxAttempts) {
-      await this.markFailed(payout.id, payout.lastError ?? 'max attempts reached');
+      this.logger.error(
+        { payoutId: payout.id, reference: payout.providerReference, attempts: payout.attempts },
+        'payout exhausted its attempt ceiling; giving up',
+      );
+      await this.payoutsRepo.markFailed(payout.id, payout.lastError ?? 'max attempts reached');
       return;
     }
 
     let recipientCode: string;
     try {
-      const user = await this.usersRepo.findOneByOrFail({ id: payout.userId });
+      const user = await this.usersRepo.findByIdOrFail(payout.userId);
       recipientCode = await this.resolveRecipient(user);
     } catch (err) {
       const reason = message(err);
-      const exhausted = await this.recordRetryableFailure(
+      const attempts = payout.attempts + 1;
+      const exhausted = attempts >= maxAttempts;
+      this.logger.warn(
+        { payoutId: payout.id, reference: payout.providerReference, reason },
+        'payout recipient resolution failed',
+      );
+      await this.payoutsRepo.recordRecipientResolutionFailure(
         payout.id,
-        payout.attempts,
-        maxAttempts,
+        attempts,
+        exhausted,
         reason,
       );
       // Same contract as a retryable transfer failure: throw so BullMQ retries
@@ -93,7 +114,7 @@ export class PayoutsService {
     // Written before the network call so a crash mid-transfer is later visible
     // as ambiguous (attempts > 0, non-terminal) rather than as never attempted.
     const attempts = payout.attempts + 1;
-    await this.payoutsRepo.update(payout.id, { status: 'processing', attempts });
+    await this.payoutsRepo.markProcessing(payout.id, attempts);
 
     const result = await this.provider.transfer({
       recipientCode,
@@ -103,22 +124,39 @@ export class PayoutsService {
 
     switch (result.status) {
       case 'succeeded':
-        await this.markSucceeded(payout.id);
+        await this.payoutsRepo.markSucceeded(payout.id);
         return;
       case 'failed':
         if (result.retryable && attempts < maxAttempts) {
-          await this.payoutsRepo.update(payout.id, { status: 'pending', lastError: result.reason });
+          this.logger.warn(
+            {
+              payoutId: payout.id,
+              reference: payout.providerReference,
+              attempts,
+              reason: result.reason,
+            },
+            'payout transfer failed; will retry',
+          );
+          await this.payoutsRepo.recordRetryableTransferFailure(payout.id, result.reason);
           // Persisted, so the state is safe; now throw so BullMQ's `attempts`/
           // backoff actually engage instead of the job completing cleanly and
           // leaving retry entirely to the 5-minute sweeper.
           throw new Error(`payout dispatch failed (retryable): ${result.reason}`);
         }
-        await this.markFailed(payout.id, result.reason);
+        this.logger.error(
+          { payoutId: payout.id, reference: payout.providerReference, reason: result.reason },
+          'payout transfer failed terminally',
+        );
+        await this.payoutsRepo.markFailed(payout.id, result.reason);
         return;
       case 'unknown':
         // Leave the row `processing`: the next dispatch reconciles by reference
         // instead of assuming success or failure.
-        await this.payoutsRepo.update(payout.id, { lastError: result.reason });
+        this.logger.warn(
+          { payoutId: payout.id, reference: payout.providerReference, reason: result.reason },
+          'payout transfer outcome unknown; money may have moved',
+        );
+        await this.payoutsRepo.recordInconclusiveOutcome(payout.id, result.reason);
         return;
     }
   }
@@ -132,12 +170,7 @@ export class PayoutsService {
     const staleAfterSeconds = this.config.staleAfterSeconds ?? 300;
     const cutoff = new Date(this.clock.now().getTime() - staleAfterSeconds * 1000);
 
-    const stale = await this.payoutsRepo.find({
-      where: [
-        { status: 'pending', updatedAt: LessThan(cutoff) },
-        { status: 'processing', updatedAt: LessThan(cutoff) },
-      ],
-    });
+    const stale = await this.payoutsRepo.findStaleNonTerminal(cutoff);
 
     let requeued = 0;
     for (const payout of stale) {
@@ -159,8 +192,13 @@ export class PayoutsService {
    *
    * An active job cannot be removed; that failure is the correct answer — the
    * payout is already being dispatched, so there is nothing to re-enqueue.
+   *
+   * Public because the Paystack webhook re-drives through exactly this path.
+   * Reusing it, rather than introducing a second queue or a distinct job id,
+   * is what preserves the one-consumer-per-payout guarantee that makes
+   * `dispatch`'s lock-free read-modify-write safe.
    */
-  private async requeue(payoutId: string): Promise<boolean> {
+  async requeue(payoutId: string): Promise<boolean> {
     const existing = await this.queue.getJob(payoutId);
     if (existing) {
       try {
@@ -177,40 +215,8 @@ export class PayoutsService {
   private async resolveRecipient(user: UserEntity): Promise<string> {
     if (user.recipientCode) return user.recipientCode;
     const code = await this.provider.ensureRecipient(user);
-    await this.usersRepo.update(user.id, { recipientCode: code });
+    await this.usersRepo.cacheRecipientCode(user.id, code);
     return code;
-  }
-
-  /** Records a retryable failure. Returns whether the attempt ceiling is now exhausted. */
-  private async recordRetryableFailure(
-    payoutId: string,
-    priorAttempts: number,
-    maxAttempts: number,
-    reason: string,
-  ): Promise<boolean> {
-    const attempts = priorAttempts + 1;
-    const exhausted = attempts >= maxAttempts;
-    await this.payoutsRepo.update(payoutId, {
-      status: exhausted ? 'failed' : 'pending',
-      attempts,
-      lastError: reason,
-    });
-    return exhausted;
-  }
-
-  /**
-   * `providerReference` is never overwritten here: it is the idempotency key
-   * presented to the provider (and carries a unique index), so it must stay
-   * exactly what was sent for the row's lifetime. Replacing it with whatever
-   * the provider echoes back would break the reconcile-by-reference lookup a
-   * retry after a crash depends on.
-   */
-  private async markSucceeded(payoutId: string): Promise<void> {
-    await this.payoutsRepo.update(payoutId, { status: 'succeeded', lastError: null });
-  }
-
-  private async markFailed(payoutId: string, reason: string): Promise<void> {
-    await this.payoutsRepo.update(payoutId, { status: 'failed', lastError: reason });
   }
 }
 
