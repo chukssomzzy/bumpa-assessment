@@ -156,6 +156,29 @@ request bodies: boot config (needs coercion and defaults on env strings), queue 
 JSON off Redis, with no class identity to validate), and the lenient webhook parse. class-validator
 would cover only the boundary and force a second library for the rest.
 
+## Response shape
+
+`GET /users/:user/achievements` carries `@ResponseSchema(achievementsResponseSchema)`, and
+`ResponseSchemaInterceptor` projects the payload onto exactly those keys on the way out. A field the
+contract never promised cannot reach a client, however the response came to carry it.
+
+**It strips, it does not reject.** A response with an unexpected field is a bug, but the request
+computed the right answer — failing it would make a cosmetic leak and an outage the same event.
+
+**Stripping is logged.** zod's `safeParse` _succeeds_ on a payload with extra keys and removes them
+silently, which is exactly the leak case and exactly the one worth knowing about, so the interceptor
+compares key sets explicitly and logs `leaked` at `error`. Do not remove that comparison believing
+validation covers it — it does not.
+
+The interceptor is opt-in: handlers without the decorator pass through untouched. Success payloads
+are still never wrapped in an envelope.
+
+Note what this replaces. The contract previously rested on TypeScript's excess-property check, which
+applies only because the service returns a _fresh object literal_. Assigning it to a variable first,
+or spreading an entity into it, silently removes that protection — and no test caught added keys,
+because they all asserted fields individually. `achievements-view.bdd-spec.ts` now pins the exact key
+set.
+
 ## OpenAPI
 
 `src/swagger.ts` mounts the document at `/docs` and `/docs-json`, from `main.ts` only — the worker

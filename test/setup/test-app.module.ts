@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { ResponseSchemaInterceptor } from '../../src/common/interceptors/response-schema.interceptor';
 import { AchievementsModule } from '../../src/modules/achievements/achievements.module';
 import { CoreModule } from '../../src/core.module';
 import { EvaluateProcessor } from '../../src/modules/events/evaluate.processor';
@@ -23,6 +25,13 @@ import { PayoutsModule } from '../../src/modules/payouts/payouts.module';
  */
 @Module({
   imports: [CoreModule, AchievementsModule, EventsModule, HealthModule, PayoutsModule],
-  providers: [EvaluateProcessor, PayoutProcessor, PayoutSweeperService],
+  providers: [
+    EvaluateProcessor,
+    PayoutProcessor,
+    PayoutSweeperService,
+    // Mirrors AppModule, so the BDD tier exercises the same response projection
+    // production applies.
+    { provide: APP_INTERCEPTOR, useClass: ResponseSchemaInterceptor },
+  ],
 })
 export class TestAppModule {}
