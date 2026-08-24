@@ -138,6 +138,44 @@ Paystack's `timestamp: false` is not an oversight — it sends no timestamp head
 `PAYSTACK_SECRET_KEY` rejects every webhook rather than accepting an empty-keyed digest. The two
 schemes must never be interchangeable; `src/common/security/hmac.spec.ts` pins that both ways.
 
+## Validation placement
+
+**Shape validation happens at the HTTP boundary, in `ZodValidationPipe`** — not in services. A
+service that asks "is this even a purchase event?" is doing the transport layer's job, and its
+signature lies about what it accepts. `EventsService.accept` takes a typed `PurchaseEvent`; the one
+check that stays is `unknown user`, because it needs the database.
+
+**The Paystack webhook is the deliberate exception.** It parses in the service, because a pipe
+rejects by throwing and any non-2xx makes Paystack redeliver the same event forever — boundary
+validation would turn a payload we merely have no use for into an unbounded retry loop. Its schema is
+`.passthrough()` for the same reason: Paystack adds fields, and rejecting unknown keys would turn a
+provider release into an outage.
+
+zod rather than class-validator, deliberately, because three of the four validation sites are not
+request bodies: boot config (needs coercion and defaults on env strings), queue job payloads (plain
+JSON off Redis, with no class identity to validate), and the lenient webhook parse. class-validator
+would cover only the boundary and force a second library for the rest.
+
+## OpenAPI
+
+`src/swagger.ts` mounts the document at `/docs` and `/docs-json`, from `main.ts` only — the worker
+has no HTTP server. `test/bdd/foundation/openapi.bdd-spec.ts` pins that every route is documented and
+that the achievements schema still carries its five snake_case properties.
+
+Two divergences from the house reference, both load-bearing:
+
+- **No `@nestjs/swagger` CLI plugin.** It infers schemas during `nest build` and does NOT run under
+  ts-jest, so a plugin-built document is empty in tests and the spec above would assert against
+  nothing. Explicit `@ApiProperty` decorators are runtime metadata and behave identically in both.
+  (`classValidatorShim` would be dead weight regardless — validation here is zod.)
+- **No global path prefix.** The reference mounts under `api/v1`; `GET /users/:user/achievements` and
+  `POST /events` are the API contract at exactly those paths.
+
+Document classes carry no runtime behaviour — nothing constructs `AchievementsResponse`,
+`PurchaseEventBody` or `ErrorResponse`. Because `PurchaseEventBody` and `purchaseEventSchema` are
+enforced by different mechanisms, `purchase-event.spec.ts` parses the documented example through the
+schema so the docs can never describe a body the service would reject.
+
 ## Test conventions
 
 Every tier is BDD-shaped: `describe('Feature: ...')` → `describe('Scenario: ...')` → `it(...)`, with

@@ -66,6 +66,14 @@ sweeper uses.
 reference on its own next run and the sweeper re-drives whatever is left; drop every webhook and
 payouts still settle, just later. Nothing may be added here that only the webhook can do.
 
+### `GET /docs` and `GET /docs-json`
+
+Interactive OpenAPI documentation and the raw document. Covers every route, both signing conventions,
+and the error shape. Generated from explicit decorators rather than the `@nestjs/swagger` CLI plugin —
+the plugin infers schemas during `nest build` and does not run under ts-jest, so a plugin-built
+document would be empty in tests and `test/bdd/foundation/openapi.bdd-spec.ts` would be asserting
+against nothing.
+
 ### `GET /health` and `GET /health/ready`
 
 Liveness and readiness. `/health` is dependency-free and cheap enough for a container probe;
