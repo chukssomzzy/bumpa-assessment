@@ -1,12 +1,26 @@
 name: CI
 
 on:
+  # Only the long-lived branches trigger on push. A pull request from a branch
+  # in this repo fires BOTH `push` and `pull_request`, so listing every branch
+  # here ran the whole suite twice per commit — once as (push), once as
+  # (pull_request) — for identical signal at double the CI minutes and double
+  # the Testcontainers load.
+  #
+  # Feature branches are covered by `pull_request` from the moment a PR exists.
+  # Naming branches explicitly also keeps tags out: a `v*` tag must not re-run
+  # this suite alongside release-publish.yml, against a commit staging already
+  # verified.
   push:
-    # `'**'` matches every branch but NOT tags. Without it a `v*` release tag
-    # would run this whole suite a second time alongside release-publish.yml,
-    # re-running integration tests against a commit staging already verified.
-    branches: ['**']
+    branches: [staging, main]
   pull_request:
+
+# Supersede in-flight runs for the same ref. Only for pull requests: a push to
+# `staging` publishes an image, and cancelling that half-way could leave the
+# `:staging` tag pointing at nothing.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:

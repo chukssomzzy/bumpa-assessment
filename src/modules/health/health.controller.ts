@@ -1,18 +1,20 @@
 import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiServiceUnavailableResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import type { Response } from 'express';
 import { EVALUATE_QUEUE } from '../../common/queues';
 import { HealthRepository } from './repositories/health.repository';
+import { ReadinessResponse } from './dto/readiness-response.dto';
 
 interface DependencyStatus {
   status: 'ok' | 'error';
   error?: string;
-}
-
-interface ReadinessBody {
-  status: 'ok' | 'error';
-  dependencies: { postgres: DependencyStatus; redis: DependencyStatus };
 }
 
 const toStatus = (result: PromiseSettledResult<void>): DependencyStatus =>
@@ -23,6 +25,7 @@ const toStatus = (result: PromiseSettledResult<void>): DependencyStatus =>
         error: result.reason instanceof Error ? result.reason.message : String(result.reason),
       };
 
+@ApiTags('health')
 @Controller('health')
 export class HealthController {
   constructor(
@@ -34,14 +37,33 @@ export class HealthController {
    * Liveness: no dependency checks. Docker probes this frequently, so it must
    * stay cheap regardless of Postgres or Redis's state.
    */
+  @ApiOperation({
+    summary: 'Liveness probe',
+    description:
+      'Dependency-free by design: container probes hit this frequently and it must stay cheap however Postgres or Redis are behaving.',
+  })
+  @ApiOkResponse({
+    description: 'The process is up.',
+    schema: { type: 'object', properties: { status: { type: 'string', example: 'ok' } } },
+  })
   @Get()
   liveness(): { status: 'ok' } {
     return { status: 'ok' };
   }
 
   /** Readiness: 200 only when both dependencies answer, 503 with a per-dependency breakdown otherwise. */
+  @ApiOperation({
+    summary: 'Readiness probe',
+    description:
+      'Checks Postgres and Redis. Answers 503 with a per-dependency breakdown when either is unreachable.',
+  })
+  @ApiOkResponse({ description: 'Both dependencies answered.', type: ReadinessResponse })
+  @ApiServiceUnavailableResponse({
+    description: 'At least one dependency is unreachable; the body names which.',
+    type: ReadinessResponse,
+  })
   @Get('ready')
-  async readiness(@Res({ passthrough: true }) response: Response): Promise<ReadinessBody> {
+  async readiness(@Res({ passthrough: true }) response: Response): Promise<ReadinessResponse> {
     const [postgres, redis] = await Promise.allSettled([this.checkPostgres(), this.checkRedis()]);
     const dependencies = { postgres: toStatus(postgres), redis: toStatus(redis) };
     const healthy = dependencies.postgres.status === 'ok' && dependencies.redis.status === 'ok';

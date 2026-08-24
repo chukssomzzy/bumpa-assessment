@@ -27,7 +27,22 @@ export const WEBHOOK_SECRET = 'test-webhook-secret';
 export const DEMO_USER_ID = '11111111-1111-4111-8111-111111111111';
 export const OTHER_USER_ID = '22222222-2222-4222-8222-222222222222';
 
-export async function createTestApp(): Promise<TestContext> {
+export interface CreateTestAppOptions {
+  /**
+   * Mounts the OpenAPI document before the server binds.
+   *
+   * It has to happen here rather than in the world facade: `SwaggerModule.setup`
+   * registers its routes on the HTTP adapter, and doing that after
+   * `app.listen()` leaves them unreachable — every request for the document
+   * answers 404. Verified, not assumed.
+   *
+   * Off by default. Generating the document walks every controller and
+   * decorator in the graph, and only the foundation OpenAPI spec reads it.
+   */
+  swagger?: boolean;
+}
+
+export async function createTestApp(options: CreateTestAppOptions = {}): Promise<TestContext> {
   const clock = new MutableClock();
 
   const moduleRef = await Test.createTestingModule({ imports: [TestAppModule] })
@@ -36,6 +51,14 @@ export async function createTestApp(): Promise<TestContext> {
     .compile();
 
   const app = moduleRef.createNestApplication({ rawBody: true });
+
+  if (options.swagger) {
+    // Imported lazily so the five suites that never ask for the document do not
+    // load the swagger module at all.
+    const { setupSwagger } = await import('../../../../src/swagger');
+    setupSwagger(app);
+  }
+
   // listen(), not just init(): supertest binds the server lazily on first use,
   // so concurrent requests constructed in one tick race that bind and the losers
   // get ECONNRESET. Binding once up front makes the concurrency tests honest.

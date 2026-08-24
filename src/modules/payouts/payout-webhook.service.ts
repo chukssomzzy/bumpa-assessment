@@ -17,6 +17,14 @@ const TERMINAL_STATUSES = new Set(['succeeded', 'failed']);
  * Deliberately permissive. Paystack owns this payload and adds fields to it;
  * rejecting unknown keys would turn a provider release into an outage, and the
  * only fields we act on are these two.
+ *
+ * Parsed HERE and not by `ZodValidationPipe` at the controller boundary, which
+ * is where every other request payload is validated. A pipe rejects by throwing,
+ * and a 4xx makes Paystack redeliver the same event indefinitely — so boundary
+ * validation would convert a payload we simply have no use for into an
+ * unbounded retry loop. This endpoint must answer 2xx to anything it can
+ * authenticate; deciding what to DO with the body is a separate question, and
+ * that is this service's job.
  */
 const paystackEventSchema = z.object({
   event: z.string(),
