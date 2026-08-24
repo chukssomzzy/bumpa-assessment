@@ -1,1 +1,7 @@
+node_modules/
+dist/
+coverage/
+.env
+*.log
 Session.vim
+.DS_Store

@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    # `'**'` matches every branch but NOT tags. Without it a `v*` release tag
+    # would run this whole suite a second time alongside release-publish.yml,
+    # re-running integration tests against a commit staging already verified.
+    branches: ['**']
+  pull_request:
+
+jobs:
+  verify:
+    name: lint, typecheck, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm test
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts
+      # Testcontainers uses the Docker daemon preinstalled on the runner.
+      - run: npm run test:integration
+
+  # Two jobs rather than one conditional job: a workflow-call job's `with:`
+  # inputs can't be computed differently per `needs:` set within a single job,
+  # and the build-only verification (every push/PR) and the gated staging
+  # publish (needs green tests) have genuinely different `needs:`. The trade is
+  # that a staging push builds the image twice — once here unpushed, once again
+  # below — but the registry cache (`_publish-image.yml`) makes the second build
+  # cheap, and the alternative (skipping the always-on check on staging) would
+  # leave the on-push/PR-only verification silently absent on the branch that
+  # matters most.
+  docker-build:
+    name: docker build (verify only)
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/_publish-image.yml
+    with:
+      push: false
+      # `tags` is required even though nothing is pushed — it just names the
+      # local, unpublished build.
+      tags: ghcr.io/chukssomzzy/bumpa-assessment:sha-${{ github.sha }}
+
+  # A `:staging` image must only ever exist for a commit whose tests went
+  # green, so this is gated on all three test jobs and restricted to pushes on
+  # `staging` itself (not PRs targeting it).
+  docker-publish-staging:
+    name: docker publish (staging)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    needs: [verify, unit, integration]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/_publish-image.yml
+    with:
+      push: true
+      tags: |
+        ghcr.io/chukssomzzy/bumpa-assessment:staging
+        ghcr.io/chukssomzzy/bumpa-assessment:sha-${{ github.sha }}

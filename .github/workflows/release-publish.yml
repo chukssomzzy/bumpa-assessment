@@ -1,0 +1,25 @@
+# Fires only on a `v*` tag push. That tag is pushed by release-please using the
+# RELEASE_PLEASE_TOKEN PAT, never by GITHUB_TOKEN — GitHub does not fire
+# workflow events for refs created with GITHUB_TOKEN, so this is the only path
+# by which a merged release actually produces a published image.
+name: Release Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    uses: ./.github/workflows/_publish-image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      push: true
+      tags: |
+        ghcr.io/chukssomzzy/bumpa-assessment:${{ github.ref_name }}
+        ghcr.io/chukssomzzy/bumpa-assessment:latest

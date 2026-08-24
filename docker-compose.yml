@@ -1,0 +1,126 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: bumpa
+      POSTGRES_PASSWORD: bumpa
+      POSTGRES_DB: bumpa
+    ports: ['5432:5432']
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bumpa -d bumpa']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ['6379:6379']
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: applies migrations and seeds definitions, then exits. Both app
+  # services wait for it to complete, so boot order is explicit rather than racy.
+  migrate:
+    build: { context: ., target: runtime }
+    command: ['node', 'dist/database/migrate']
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://bumpa:bumpa@postgres:5432/bumpa
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: 'no'
+
+  api:
+    build: { context: ., target: runtime }
+    command: ['node', 'dist/main']
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://bumpa:bumpa@postgres:5432/bumpa
+      REDIS_URL: redis://redis:6379
+    ports: ['3000:3000']
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      # /health is liveness-only (no dependency calls), so this stays cheap.
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Same image, different command. The API's module graph excludes the queue
+  # processors, so only this service consumes jobs.
+  worker:
+    build: { context: ., target: runtime }
+    command: ['node', 'dist/main.worker']
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgres://bumpa:bumpa@postgres:5432/bumpa
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      # No HTTP listener to probe: WorkerHeartbeatService (src/common/worker-heartbeat.service.ts)
+      # writes this file every 10s, so a stale mtime means the event loop has
+      # stalled or the process is stuck, not just "no requests yet".
+      test: ['CMD', 'node', '-e', 'process.exit(Date.now() - require("fs").statSync("/tmp/worker-heartbeat").mtimeMs < 30000 ? 0 : 1)']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # --- tunnel profile: opt in with `docker compose --profile tunnel up` ---
+  #
+  # Exposes the local api to the public internet so Paystack can deliver transfer
+  # webhooks to a machine with no inbound route. Not part of the default stack:
+  # a reviewer running `docker compose up` needs no Cloudflare account.
+
+  # Compose's required-variable syntax (`${VAR:?message}`) is NOT profile-aware —
+  # interpolation happens before profiles are filtered, so a bare `:?` here would
+  # break the plain `docker compose up` path for everyone. Enforcing the
+  # requirement therefore has to happen at container start, and it cannot happen
+  # inside cloudflared: that image ships no shell. Hence this four-megabyte gate,
+  # which exists purely so the failure names the variable you actually need to
+  # set instead of cloudflared's misleading "requires the ID or name of the
+  # tunnel".
+  tunnel-preflight:
+    profiles: [tunnel]
+    image: busybox:1.36
+    environment:
+      CLOUDFLARE_TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    command:
+      - sh
+      - -c
+      - |
+        if [ -z "$${CLOUDFLARE_TUNNEL_TOKEN}" ]; then
+          echo "" >&2
+          echo "  The 'tunnel' profile is active but CLOUDFLARE_TUNNEL_TOKEN is not set." >&2
+          echo "  Create a named tunnel in the Cloudflare Zero Trust dashboard, then put" >&2
+          echo "  its token in .env as CLOUDFLARE_TUNNEL_TOKEN=..., or drop --profile tunnel." >&2
+          echo "" >&2
+          exit 1
+        fi
+    restart: 'no'
+
+  cloudflared:
+    profiles: [tunnel]
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate --protocol http2 run --token ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      # Fails the whole `up` when the token is missing, rather than letting
+      # cloudflared crash-loop against a misleading error.
+      tunnel-preflight: { condition: service_completed_successfully }
+      api: { condition: service_healthy }
+    # `unless-stopped`, unlike the preflight's `no`: once the token is known good,
+    # a dropped tunnel should reconnect rather than silently stay down.
+    restart: unless-stopped
+
+volumes:
+  pgdata:
