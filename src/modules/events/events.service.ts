@@ -3,7 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { EVALUATE_QUEUE, type EvaluateJob } from '../../common/queues';
 import { UserRepository } from '../users/repositories/user.repository';
-import { purchaseEventSchema } from './dto/purchase-event.dto';
+import type { PurchaseEvent } from './dto/purchase-event.dto';
 
 @Injectable()
 export class EventsService {
@@ -13,22 +13,21 @@ export class EventsService {
   ) {}
 
   /**
-   * Validates the payload, confirms the user exists, and enqueues an evaluation
-   * job keyed by event id so duplicate deliveries collapse.
+   * Confirms the user exists and enqueues an evaluation job keyed by event id
+   * so duplicate deliveries collapse.
+   *
+   * Takes an already-validated `PurchaseEvent`: shape checking belongs to
+   * `ZodValidationPipe` at the controller boundary, not here. What remains is
+   * the one check that genuinely needs this layer, because it needs the
+   * database — an unknown user.
    *
    * `requestId` carries the HTTP request's correlation id into the job so the
    * worker's logs can be traced back to it; optional so a caller without one
    * (a test, a future non-HTTP producer) still type-checks.
    *
-   * Throws 422 for a malformed payload or an unknown user.
+   * Throws 422 for an unknown user.
    */
-  async accept(body: unknown, requestId?: string): Promise<{ accepted: true }> {
-    const result = purchaseEventSchema.safeParse(body);
-    if (!result.success) {
-      throw new UnprocessableEntityException('invalid purchase event payload');
-    }
-    const event = result.data;
-
+  async accept(event: PurchaseEvent, requestId?: string): Promise<{ accepted: true }> {
     if (!(await this.users.exists(event.userId))) {
       throw new UnprocessableEntityException('unknown user');
     }

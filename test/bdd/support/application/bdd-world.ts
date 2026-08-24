@@ -15,8 +15,23 @@ export interface BddWorld extends TestContext {
   verifyScenario(): void;
 }
 
-export const createBddWorld = async (): Promise<BddWorld> => {
-  const ctx = await createTestApp();
+export interface CreateBddWorldOptions {
+  /**
+   * Mounts the OpenAPI document (and its UI) on the booted application.
+   *
+   * Off by default. Generating the document walks every controller, DTO and
+   * decorator in the graph, and only the foundation OpenAPI spec has anything
+   * to say about it — the other five suites would pay that cost on every boot
+   * for a document they never read.
+   *
+   * Handled by `app-harness.ts`, which must mount it BEFORE the server binds:
+   * routes registered after `app.listen()` are unreachable and answer 404.
+   */
+  swagger?: boolean;
+}
+
+export const createBddWorld = async (options: CreateBddWorldOptions = {}): Promise<BddWorld> => {
+  const ctx = await createTestApp({ swagger: options.swagger });
 
   return {
     ...ctx,
