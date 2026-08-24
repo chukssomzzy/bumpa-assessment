@@ -2,8 +2,8 @@ import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import type { Response } from 'express';
-import { DataSource } from 'typeorm';
 import { EVALUATE_QUEUE } from '../../common/queues';
+import { HealthRepository } from './repositories/health.repository';
 
 interface DependencyStatus {
   status: 'ok' | 'error';
@@ -26,7 +26,7 @@ const toStatus = (result: PromiseSettledResult<void>): DependencyStatus =>
 @Controller('health')
 export class HealthController {
   constructor(
-    private readonly dataSource: DataSource,
+    private readonly health: HealthRepository,
     @InjectQueue(EVALUATE_QUEUE) private readonly queue: Queue,
   ) {}
 
@@ -51,7 +51,7 @@ export class HealthController {
   }
 
   private async checkPostgres(): Promise<void> {
-    await this.dataSource.query('SELECT 1');
+    await this.health.ping();
   }
 
   private async checkRedis(): Promise<void> {

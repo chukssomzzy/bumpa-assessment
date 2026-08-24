@@ -23,14 +23,42 @@ logs, Jest for all three test tiers. Node 24, npm (no yarn/pnpm).
 ## Module layout
 
 Each `src/modules/<name>/` is a NestJS feature module: `<name>.module.ts`, `<name>.service.ts`,
-`<name>.controller.ts`, `entities/`. Achievements additionally has `domain/` — pure functions
-(`evaluate.ts`, `badge.ts`, `next-available.ts`) with no NestJS or TypeORM imports, unit-tested in
-isolation. When achievement/badge rules change, change `domain/` first; the service is a thin
-orchestration layer around it (transaction, repositories, event emission).
+`<name>.controller.ts`, `entities/`, `repositories/`. Achievements additionally has `domain/` — pure
+functions (`evaluate.ts`, `badge.ts`, `next-available.ts`) with no NestJS or TypeORM imports,
+unit-tested in isolation. When achievement/badge rules change, change `domain/` first; the service is
+a thin orchestration layer around it (transaction, repositories, event emission).
 
 `src/core.module.ts` holds what both runtime roles share: config, TypeORM connection, BullMQ
-connection, structured logging. `src/common/` holds cross-cutting code with no natural module home
-(the exception filter, queue job constants, the worker heartbeat).
+connection, structured logging, and the CLS/transaction plugin. `src/common/` holds cross-cutting
+code with no natural module home (the exception filter, queue job constants, the worker heartbeat,
+the HMAC verifier).
+
+## Persistence goes through repositories
+
+**TypeORM primitives do not appear outside `repositories/`.** No service, controller or processor may
+inject a `Repository`, reach for `DataSource`, call `getRepository`, `createQueryBuilder`, or run raw
+SQL. `grep -rE "dataSource\.|getRepository\(|createQueryBuilder\(|InjectRepository|manager\.query" src/modules`
+should only ever match inside a `repositories/` directory. (`src/database/` is exempt — it is
+bootstrap and CLI code, not request-path code.)
+
+Repository methods are named for the domain operation, not the query: `recordEventIfNew`,
+`incrementPurchaseCount`, `insertPendingPayoutIfAbsent`. A method that merely forwards its arguments
+to `findOne` has bought nothing.
+
+Every repository takes its `EntityManager` from `TransactionHost<TransactionalAdapterTypeOrm>` —
+`this.txHost.tx`. That is what makes one method work both inside and outside a transaction: it
+resolves to the ambient transactional manager when a `@Transactional()` frame is active, and to the
+default manager when none is. **A repository call is therefore only atomic with its neighbours if
+some caller up the stack declared `@Transactional()`.**
+
+`AchievementsService.applyPurchaseEvent` is the one place that declares it, and it must stay that
+way: dedupe, counter increment, achievement inserts, badge inserts and the payout row are one
+transaction or the outbox guarantee below is void. `PayoutsService.dispatch` deliberately does NOT
+declare it — it must not hold a database transaction open across the Paystack network call.
+
+The two load-bearing raw statements now live in `achievements/repositories/user-progress.repository.ts`
+(the row-locking upsert) and `events/repositories/processed-event.repository.ts` (the dedupe insert).
+Both are raw on purpose; see the invariants below before rewriting either as a query builder.
 
 ## Two runtime roles, one codebase
 
@@ -64,11 +92,13 @@ Read these before touching `payouts` or the evaluate transaction.
 - **One payout per badge**, enforced by `UNIQUE(user_id, badge_key)` — not by application logic.
 - **A badge cannot exist without a payout row.** Both are written in the same transaction, which is
   what lets the `payouts` table serve as the outbox. No generic outbox table exists.
-- **`providerReference` is `{userId}:{badgeKey}` and never changes.** It is the idempotency key and
+- **`providerReference` is `{userId}_{badgeKey}` and never changes.** The separator is an
+  underscore because Paystack rejects `:` and `.` in a reference with HTTP 400 (verified against the
+  live API); a colon strands every payout, since the resulting failed lookup is never terminal. It is the idempotency key and
   the only handle for reconciling an ambiguous transfer. Never overwrite it with a provider-returned
   value.
 - **An `unknown` provider outcome is never terminal.** Money may have moved. Reconcile by reference
-  before any retry, and reconcile *before* checking the attempt ceiling — otherwise a transfer that
+  before any retry, and reconcile _before_ checking the attempt ceiling — otherwise a transfer that
   actually succeeded gets recorded as failed, and re-driving it double-pays.
 - **A retryable failure throws**, so BullMQ's backoff engages. Returning normally completes the job
   and silently leaves recovery to the sweeper alone.
@@ -78,8 +108,34 @@ Read these before touching `payouts` or the evaluate transaction.
 - **`dispatch` is a read-modify-write with no row lock.** Safe only because the job id is the payout
   id, so BullMQ gives one consumer at a time, and `maxStalledCount: 0` stops a stalled job being
   re-run alongside the original. Closing this properly would need a lease column and a migration.
-- **The HMAC covers `{timestamp}.{rawBody}`.** Signing the body alone leaves the freshness window
-  unauthenticated and the request replayable forever.
+- **Dedupe reads the RETURNING row count, never `identifiers`.** `processed_events.event_id` is a
+  caller-supplied primary key, so a query-builder `.orIgnore()` insert can report identifiers from
+  the values it was given even when `ON CONFLICT` skipped the row. Only `recordEventIfNew`'s row
+  count distinguishes a new event from a redelivery — and a wrong answer means every Paystack
+  redelivery re-drives the payout, which no test asserting "exactly one receipt row" would catch.
+- **The storefront HMAC covers `{timestamp}.{rawBody}`.** Signing the body alone leaves the
+  freshness window unauthenticated and the request replayable forever.
+- **The Paystack webhook is an optimisation, never a dependency.** It only re-drives an existing
+  payout through the same `requeue` path the sweeper uses; the worker still calls `findTransfer`.
+  Drop every webhook and the system still settles, just later. Nothing may be added to that handler
+  that only the webhook can do.
+- **The webhook always answers 2xx once signed.** A non-2xx makes Paystack redeliver, so refusing an
+  event we have no use for buys an unbounded retry loop and changes nothing.
+
+## Two signing schemes, one verifier
+
+`src/common/security/hmac.ts` holds the only implementation of the signature comparison. Senders
+differ as _data_ (`HmacScheme`), not as duplicated guards:
+
+| Sender     | Header                 | Signed payload       | Freshness |
+| ---------- | ---------------------- | -------------------- | --------- |
+| Storefront | `x-signature`          | `{timestamp}.{body}` | enforced  |
+| Paystack   | `x-paystack-signature` | raw body alone       | none      |
+
+Paystack's `timestamp: false` is not an oversight — it sends no timestamp header. `verifyHmac`
+**fails closed**: a scheme with no secret verifies nothing, so a stack booted without
+`PAYSTACK_SECRET_KEY` rejects every webhook rather than accepting an empty-keyed digest. The two
+schemes must never be interchangeable; `src/common/security/hmac.spec.ts` pins that both ways.
 
 ## The three test tiers
 
@@ -90,7 +146,10 @@ Read these before touching `payouts` or the evaluate transaction.
   Redis via Testcontainers, `TestAppModule` (api + worker graphs combined), HTTP via `supertest`.
   This is where queue draining, concurrency, and the HMAC boundary are exercised.
 - **E2E** (`test/e2e/*.spec.ts`, `npm run test:e2e`, manual workflow only): a real `docker compose`
-  stack with real Paystack credentials. Not run in normal CI.
+  stack with real Paystack credentials. Not run in normal CI. `payout-webhook.e2e.spec.ts`
+  additionally needs `--profile tunnel` and waits on a webhook Paystack genuinely delivers — see its
+  header for the four prerequisites. It asserts on the **receipt row**, never on payout status:
+  status alone would go green via the worker's own reconcile even with the tunnel dead.
 
 New tests belong in the lowest tier that can actually exercise the behaviour — domain logic in
 unit, anything touching Postgres/Redis/HTTP wiring in integration.

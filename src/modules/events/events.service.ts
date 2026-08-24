@@ -1,17 +1,15 @@
 import { Injectable, UnprocessableEntityException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
-import { InjectRepository } from '@nestjs/typeorm';
 import type { Queue } from 'bullmq';
-import { Repository } from 'typeorm';
 import { EVALUATE_QUEUE, type EvaluateJob } from '../../common/queues';
-import { UserEntity } from '../users/user.entity';
+import { UserRepository } from '../users/repositories/user.repository';
 import { purchaseEventSchema } from './dto/purchase-event.dto';
 
 @Injectable()
 export class EventsService {
   constructor(
     @InjectQueue(EVALUATE_QUEUE) private readonly queue: Queue<EvaluateJob>,
-    @InjectRepository(UserEntity) private readonly users: Repository<UserEntity>,
+    private readonly users: UserRepository,
   ) {}
 
   /**
@@ -31,8 +29,7 @@ export class EventsService {
     }
     const event = result.data;
 
-    const user = await this.users.findOne({ where: { id: event.userId } });
-    if (!user) {
+    if (!(await this.users.exists(event.userId))) {
       throw new UnprocessableEntityException('unknown user');
     }
 

@@ -1,5 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
+import { UseCls } from 'nestjs-cls';
 import { PAYOUT_QUEUE, type PayoutJob } from '../../common/queues';
 import { PayoutsService } from './payouts.service';
 
@@ -20,6 +21,12 @@ export class PayoutProcessor extends WorkerHost {
     super();
   }
 
+  // No ambient CLS context outside an HTTP request; `dispatch`'s repository
+  // calls resolve their EntityManager off one, so a job needs its own — same
+  // reasoning as `EvaluateProcessor`, even though `dispatch` itself never opens
+  // a `@Transactional()` transaction (it must not: that would hold a DB
+  // transaction open across the Paystack network call).
+  @UseCls()
   async process(job: Job<PayoutJob>): Promise<void> {
     await this.payouts.dispatch(job.data.payoutId);
   }

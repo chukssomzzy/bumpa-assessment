@@ -1,6 +1,11 @@
 name: E2E
 
 # Manual only: needs real provider credentials and takes minutes rather than seconds.
+#
+# The webhook spec additionally needs the `tunnel` profile and a Cloudflare named
+# tunnel whose hostname is registered as the TEST-MODE webhook URL in the Paystack
+# dashboard, with OTP-for-transfers disabled. Without CLOUDFLARE_TUNNEL_TOKEN the
+# tunnel-preflight container fails the `up` by design, naming the missing variable.
 on:
   workflow_dispatch:
 
@@ -20,13 +25,14 @@ jobs:
           sed -i "s|^WEBHOOK_SECRET=.*|WEBHOOK_SECRET=${{ secrets.WEBHOOK_SECRET }}|" .env
           sed -i "s|^PAYSTACK_SECRET_KEY=.*|PAYSTACK_SECRET_KEY=${{ secrets.PAYSTACK_SECRET_KEY }}|" .env
           sed -i "s|^PAYMENT_PROVIDER=.*|PAYMENT_PROVIDER=paystack|" .env
-      - run: docker compose up -d --wait
+          sed -i "s|^CLOUDFLARE_TUNNEL_TOKEN=.*|CLOUDFLARE_TUNNEL_TOKEN=${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}|" .env
+      - run: docker compose --profile tunnel up -d --wait
       - run: npm run test:e2e
         env:
           WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
           API_URL: http://localhost:3000
       - if: always()
-        run: docker compose logs --no-color > compose-logs.txt
+        run: docker compose --profile tunnel logs --no-color > compose-logs.txt
       - if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -123,21 +123,29 @@ export const BADGE_DEFINITIONS: BadgeDefinition[] = [
 
 /**
  * Demo customers, so the documented flow is executable on a clean checkout.
- * Test bank details — Paystack test mode accepts any well-formed Nigerian account.
+ *
+ * These bank details are NOT arbitrary. Paystack test mode does not accept any
+ * well-formed Nigerian account — `/transferrecipient` calls a real resolver and
+ * answers "Cannot resolve account" for most combinations, which surfaces as a
+ * 400 that leaves the payout retrying forever rather than as anything obviously
+ * wrong with the seed. Only account `0000000000` resolves, and only at some
+ * banks: verified working at 044 (Access) and 057 (Zenith); verified NOT working
+ * at 058 (GTBank) or 011 (First Bank). The two users differ by bank rather than
+ * by account number because the account number is the part that cannot vary.
  */
 export const DEMO_USERS = [
   {
     id: '11111111-1111-4111-8111-111111111111',
     name: 'Ada Demo',
     email: 'ada@example.com',
-    bankCode: '058',
-    accountNumber: '0000000001',
+    bankCode: '044',
+    accountNumber: '0000000000',
   },
   {
     id: '22222222-2222-4222-8222-222222222222',
     name: 'Bola Demo',
     email: 'bola@example.com',
-    bankCode: '058',
-    accountNumber: '0000000002',
+    bankCode: '057',
+    accountNumber: '0000000000',
   },
 ];

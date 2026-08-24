@@ -33,11 +33,11 @@ badge; earning a badge pays the customer ₦300.
 
 ```jsonc
 {
-  "unlocked_achievements":      ["First Purchase", "5 Purchases"],
-  "next_available_achievements": ["10 Purchases"],   // only the next tier per group
-  "current_badge":               "Beginner",
-  "next_badge":                  "Intermediate",
-  "remaining_to_unlock_next_badge": 2
+  "unlocked_achievements": ["First Purchase", "5 Purchases"],
+  "next_available_achievements": ["10 Purchases"], // only the next tier per group
+  "current_badge": "Beginner",
+  "next_badge": "Intermediate",
+  "remaining_to_unlock_next_badge": 2,
 }
 ```
 
@@ -48,6 +48,23 @@ timestamp is within a freshness window, then acknowledges with `202` and hands t
 The timestamp is inside the signed payload deliberately: signing the body alone would leave the
 replay window unauthenticated, since an attacker could rewrite `x-timestamp` and the signature would
 still verify.
+
+### `POST /webhooks/paystack`
+
+Paystack's transfer notifications. Verifies an HMAC-SHA512 signature over the **raw body alone** in
+`x-paystack-signature` — a different scheme from `/events`, because Paystack sends no timestamp
+header to bind. Both schemes are expressed as data against one verifier
+(`src/common/security/hmac.ts`), which fails closed: with no `PAYSTACK_SECRET_KEY` configured it
+rejects everything rather than accepting an empty-keyed digest.
+
+Answers `200` for any signed request, whatever the payload turns out to be. A non-2xx makes Paystack
+redeliver, so refusing an event we have no use for would buy an unbounded retry loop and change
+nothing. Events for a transfer we recognise re-drive that payout through the same `requeue` path the
+sweeper uses.
+
+**This endpoint is a latency optimisation, never a correctness dependency.** The worker reconciles by
+reference on its own next run and the sweeper re-drives whatever is left; drop every webhook and
+payouts still settle, just later. Nothing may be added here that only the webhook can do.
 
 ### `GET /health` and `GET /health/ready`
 
@@ -66,10 +83,10 @@ achievements response shape is part of the specified contract:
 
 ### Domain events
 
-| Event | Payload |
-|---|---|
+| Event                 | Payload                                    |
+| --------------------- | ------------------------------------------ |
 | `AchievementUnlocked` | `achievement_name` (string), `user` (User) |
-| `BadgeUnlocked` | `badge_name` (string), `user` (User) |
+| `BadgeUnlocked`       | `badge_name` (string), `user` (User)       |
 
 ---
 
@@ -117,14 +134,14 @@ instead of failing a webhook. `AchievementUnlocked` and `BadgeUnlocked` are ordi
 emissions, which keeps them readable domain code and trivially unit-testable rather than
 infrastructure.
 
-**The payout row is the outbox.** Committing a badge and *then* enqueueing its payout has a gap: die
+**The payout row is the outbox.** Committing a badge and _then_ enqueueing its payout has a gap: die
 in between, and the retry finds the badge already unlocked, emits nothing, and exits clean — a
 silently lost cashback with nothing in the DLQ. So the `payouts` row is written `pending` inside the
 same transaction as the badge. The invariant is enforced by the schema rather than by control flow,
 and a cron sweeper reclaims anything still pending after five minutes. This is a transactional
 outbox specialised to payouts: same guarantee, no second table and no relay process.
 
-**Badges are count thresholds.** The brief's prose mentions *"sets of achievements"*, but the worked
+**Badges are count thresholds.** The brief's prose mentions _"sets of achievements"_, but the worked
 example and the `remaining_to_unlock_next_badge (int)` contract are both count-based. The graded
 endpoint wins; the ambiguity is noted here deliberately.
 
@@ -154,12 +171,12 @@ boundary that makes the rest of the design safe, not a hygiene checkbox.
 Sized for the single store the brief describes. Stated explicitly, because the assumption is what
 justifies the decisions above — including what is deliberately absent.
 
-| | |
-|---|---|
-| Orders per day (post-"boom") | ~1,000 |
-| Sustained rate | ~0.01 orders/sec |
-| Flash-sale burst | ~20 orders/sec for a few minutes |
-| Cashback payouts per day | tens |
+|                              |                                  |
+| ---------------------------- | -------------------------------- |
+| Orders per day (post-"boom") | ~1,000                           |
+| Sustained rate               | ~0.01 orders/sec                 |
+| Flash-sale burst             | ~20 orders/sec for a few minutes |
+| Cashback payouts per day     | tens                             |
 
 This is a small system; one Postgres and one worker absorb it with orders of magnitude of headroom.
 **Throughput is therefore not the design constraint.** Two things are, and both bite at any volume:
@@ -167,7 +184,7 @@ This is a small system; one Postgres and one worker absorb it with orders of mag
 1. **Concurrency correctness** — simultaneous purchases must not double-unlock an achievement or
    pay a badge twice. That is a problem with two concurrent requests, not two thousand.
 2. **Third-party reliability** — the provider call is slow, occasionally fails, and can fail
-   *ambiguously*: a timeout may mean the transfer already succeeded.
+   _ambiguously_: a timeout may mean the transfer already succeeded.
 
 ### Deliberately not built
 
@@ -219,7 +236,7 @@ the event stream — which makes its correctness a first-class concern rather th
 
 ## Invariants
 
-1. **An event is processed at most once.** The `processed_events` insert happens *inside* the
+1. **An event is processed at most once.** The `processed_events` insert happens _inside_ the
    evaluate transaction, not at HTTP time. Ingest stays stateless so that a crash before enqueue is
    recoverable by the producer's retry — were ingest to write the dedupe row first, that retry would
    be swallowed and the purchase lost permanently. BullMQ `jobId = eventId` collapses duplicate
@@ -256,9 +273,9 @@ The API is then on `http://localhost:3000`.
 
 The seed creates two demo customers with test bank details, so this runs on a clean checkout:
 
-| Customer | Id |
-|---|---|
-| Ada Demo | `11111111-1111-4111-8111-111111111111` |
+| Customer  | Id                                     |
+| --------- | -------------------------------------- |
+| Ada Demo  | `11111111-1111-4111-8111-111111111111` |
 | Bola Demo | `22222222-2222-4222-8222-222222222222` |
 
 ```bash
@@ -281,21 +298,24 @@ curl http://localhost:3000/users/$USER/achievements
 ```
 
 Repeat the POST with a fresh `eventId` to advance the counter; the fifth purchase unlocks
-"5 Purchases". Re-sending the *same* `eventId` is a no-op, by design.
+"5 Purchases". Re-sending the _same_ `eventId` is a no-op, by design.
 
 ---
 
 ## Configuration
 
-| Variable | Purpose |
-|---|---|
-| `DATABASE_URL` | Postgres connection string |
-| `REDIS_URL` | Redis connection string for BullMQ |
-| `WEBHOOK_SECRET` | Shared secret for HMAC verification on `POST /events` |
-| `PAYSTACK_SECRET_KEY` | Paystack API key — use a `sk_test_…` key |
-| `PAYMENT_PROVIDER` | `paystack` or `fake` (default `fake` in test) |
-| `CASHBACK_AMOUNT_KOBO` | Cashback per badge, default `30000` (₦300) |
-| `PAYOUT_MAX_ATTEMPTS` | Attempts before a payout goes terminal `failed` |
+| Variable                     | Purpose                                                          |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `DATABASE_URL`               | Postgres connection string                                       |
+| `REDIS_URL`                  | Redis connection string for BullMQ                               |
+| `WEBHOOK_SECRET`             | Shared secret for HMAC verification on `POST /events`            |
+| `PAYSTACK_SECRET_KEY`        | Paystack API key — use a `sk_test_…` key                         |
+| `PAYMENT_PROVIDER`           | `paystack` or `fake` (default `fake` in test)                    |
+| `CASHBACK_AMOUNT_KOBO`       | Cashback per badge, default `30000` (₦300)                       |
+| `PAYOUT_MAX_ATTEMPTS`        | Attempts before a payout goes terminal `failed`                  |
+| `PAYOUT_STALE_AFTER_SECONDS` | Re-drive payouts left pending longer than this                   |
+| `WEBHOOK_TOLERANCE_SECONDS`  | Freshness window for `POST /events`, default `300`               |
+| `CLOUDFLARE_TUNNEL_TOKEN`    | Only for `--profile tunnel`; see Receiving real webhooks locally |
 
 Paystack test-mode transfers return success immediately without moving funds, so the real adapter is
 exercisable end to end against test keys.
@@ -313,11 +333,11 @@ npm run test:cov          # coverage of the domain layer
 
 Three tiers, deliberately separated:
 
-| Tier | Covers | Runs on push |
-|---|---|---|
-| `test` | Pure rules functions, no I/O | yes |
-| `test:integration` | Repositories, processors, sweeper, concurrency | yes |
-| `test:e2e` | The composed stack over HTTP, real provider test keys | no — manual dispatch |
+| Tier               | Covers                                                | Runs on push         |
+| ------------------ | ----------------------------------------------------- | -------------------- |
+| `test`             | Pure rules functions, no I/O                          | yes                  |
+| `test:integration` | Repositories, processors, sweeper, concurrency        | yes                  |
+| `test:e2e`         | The composed stack over HTTP, real provider test keys | no — manual dispatch |
 
 Integration tests run against **real** Postgres and Redis rather than sqlite or mocks, because the
 design rests on three Postgres behaviours — an exclusive row lock, `ON CONFLICT DO NOTHING`, and a
@@ -327,18 +347,89 @@ processors, so enqueued work is consumed in-process — production keeps those g
 
 What the suite covers:
 
-| Scenario | Asserts |
-|---|---|
-| Concurrent purchases | N simultaneous events for one user → exactly one badge, exactly one payout |
-| Duplicate delivery | Same `event_id` twice → counter incremented once |
-| Crash between commit and enqueue | Sweeper reclaims the pending payout |
-| Provider failure | Retries with backoff, then lands terminal `failed` |
-| Ambiguous timeout | Reconciles by `reference`, never double-pays |
-| HMAC guard | Bad signature, stale timestamp and replayed body all rejected |
-| Threshold & badge maths | Each tier unlocks at exactly its count; `remaining_to_unlock_next_badge` is correct |
-| Per-group selection | Only the lowest un-earned tier per group is returned |
-| Endpoint edges | Brand-new user; top-tier user (`next_badge` null, remaining 0) |
-| Full path | Events in → achievements, badge and payout out → endpoint reflects it |
+| Scenario                         | Asserts                                                                             |
+| -------------------------------- | ----------------------------------------------------------------------------------- |
+| Concurrent purchases             | N simultaneous events for one user → exactly one badge, exactly one payout          |
+| Duplicate delivery               | Same `event_id` twice → counter incremented once                                    |
+| Crash between commit and enqueue | Sweeper reclaims the pending payout                                                 |
+| Provider failure                 | Retries with backoff, then lands terminal `failed`                                  |
+| Ambiguous timeout                | Reconciles by `reference`, never double-pays                                        |
+| HMAC guard                       | Bad signature, stale timestamp and replayed body all rejected                       |
+| Threshold & badge maths          | Each tier unlocks at exactly its count; `remaining_to_unlock_next_badge` is correct |
+| Per-group selection              | Only the lowest un-earned tier per group is returned                                |
+| Endpoint edges                   | Brand-new user; top-tier user (`next_badge` null, remaining 0)                      |
+| Full path                        | Events in → achievements, badge and payout out → endpoint reflects it               |
+
+---
+
+## Receiving real webhooks locally
+
+Paystack cannot reach a laptop. The `tunnel` compose profile publishes the local api through a named
+Cloudflare tunnel so it can:
+
+```bash
+# .env needs CLOUDFLARE_TUNNEL_TOKEN from a named tunnel in the Cloudflare Zero Trust dashboard.
+# In that tunnel's Public Hostname config, point the service at `api:3000` — cloudflared runs
+# inside the compose network, so `localhost` there would be the cloudflared container itself.
+docker compose --profile tunnel up -d --wait
+
+# Or set COMPOSE_PROFILES=tunnel in .env and a plain `docker compose up -d --wait` includes it.
+```
+
+Without the profile the stack runs exactly as before and needs no Cloudflare account. Compose's
+required-variable syntax (`${VAR:?message}`) is _not_ profile-aware — interpolation happens before
+profiles are filtered — so the token requirement is enforced by a `tunnel-preflight` container that
+fails the `up` with a message naming the variable. cloudflared's own image ships no shell, and its
+unaided error ("requires the ID or name of the tunnel") points at the wrong thing entirely.
+
+Then, in the Paystack dashboard, register the tunnel hostname as the **test-mode** webhook URL
+pointing at `/webhooks/paystack`, and **disable OTP for transfers** — with OTP on, a transfer returns
+`otp`, never completes, and no webhook is ever emitted:
+
+```bash
+curl -X POST https://api.paystack.co/transfer/disable_otp \
+  -H "Authorization: Bearer $PAYSTACK_SECRET_KEY"
+curl -X POST https://api.paystack.co/transfer/disable_otp_finalize \
+  -H "Authorization: Bearer $PAYSTACK_SECRET_KEY" -H "Content-Type: application/json" \
+  -d '{"otp":"<code Paystack sends you>"}'
+```
+
+`test/e2e/payout-webhook.e2e.spec.ts` then waits for a webhook Paystack genuinely delivers. It
+asserts on the **receipt row**, never on payout status — status alone would go green via the worker's
+own reconcile even with the tunnel completely dead, which is the one failure the test exists to
+catch.
+
+---
+
+## Releases & images
+
+Deployment here is building and publishing an image; there is no deploy step.
+
+- **`staging`** is the default branch and the integration target. A push to it publishes
+  `ghcr.io/chukssomzzy/bumpa-assessment:staging` and `:sha-<sha>` — but only after lint, typecheck,
+  unit and integration jobs pass, so that tag always means "known good".
+- **`main`** is production. Promotion is a `staging → main` pull request, and it **must be merged as
+  a merge commit, never squashed**: release-please derives the version and changelog by parsing
+  individual commit messages, and a squash collapses a whole release into one contentless entry.
+- release-please maintains a rolling release PR against `main`. Merging it is the release: it tags
+  the repo, and that tag publishes `:v<version>` and `:latest`.
+
+Both callers build through one reusable workflow (`.github/workflows/_publish-image.yml`), so the
+staging and production images cannot silently diverge in build args or base image.
+
+**Required repository secrets**
+
+| Secret                                  | Needed by                                                                                                                                                                            |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `RELEASE_PLEASE_TOKEN`                  | `release-please.yml` — see below                                                                                                                                                     |
+| `WEBHOOK_SECRET`, `PAYSTACK_SECRET_KEY` | `e2e.yml`                                                                                                                                                                            |
+| `CLOUDFLARE_TUNNEL_TOKEN`               | `e2e.yml` — the manual E2E workflow now brings the stack up with `--profile tunnel`, and `tunnel-preflight` fails the `up` without it, taking the non-webhook E2E specs down with it |
+
+**On `RELEASE_PLEASE_TOKEN`:** a fine-grained PAT scoped to this repo with _Contents: write_
+and _Pull requests: write_. `GITHUB_TOKEN` will not do: GitHub deliberately fires no workflow
+events for anything it creates, so a tag pushed under it would trigger no image build at all. Note
+that when this PAT expires, release PRs stop appearing **silently** — there is no in-band failure, so
+it needs a calendar reminder.
 
 ---
 

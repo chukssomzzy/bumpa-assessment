@@ -1,0 +1,48 @@
+# Maintains a single rolling release pull request against `main`.
+#
+# Nothing is released while that pull request is open. Merging it IS the release:
+# it tags the repository, and that tag push triggers the release publish workflow.
+#
+# `staging` stays the integration branch and the repository default. Promotion is
+# `staging` -> `main` by pull request, and it MUST be merged as a merge commit,
+# never squashed — release-please derives the version and the changelog by parsing
+# individual commit messages, so a squashed promotion collapses a whole release
+# into one contentless changelog entry.
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Create or update the release pull request
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # REQUIRED, and not inferred from the trigger. The action defaults this
+          # to the repository's DEFAULT branch, which here is `staging` — so
+          # without it release-please would open `chore(staging): release ...`
+          # against staging even though this workflow only runs on pushes to
+          # main. Merging such a PR would tag a staging commit against a branch
+          # that never went through the main-only promotion gate.
+          target-branch: main
+          # NOT the default GITHUB_TOKEN. GitHub deliberately does not fire
+          # workflow events for anything created with it, so a tag pushed under
+          # that token would trigger no image build at all and the release would
+          # stop dead at the tag. A fine-grained PAT with contents + pull-requests
+          # write is what makes the tag push start the release publish workflow.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}

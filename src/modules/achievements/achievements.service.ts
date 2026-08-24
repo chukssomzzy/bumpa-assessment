@@ -1,10 +1,10 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigType } from '@nestjs/config';
-import { DataSource, EntityManager } from 'typeorm';
+import { Transactional } from '@nestjs-cls/transactional';
 import { paymentsConfig } from '../../config/configuration';
-import { PayoutEntity } from '../payouts/payout.entity';
-import { UserProgressEntity } from '../users/user-progress.entity';
-import { UserEntity } from '../users/user.entity';
+import { ProcessedEventRepository } from '../events/repositories/processed-event.repository';
+import { PayoutRepository } from '../payouts/repositories/payout.repository';
+import { UserRepository } from '../users/repositories/user.repository';
 import { badgeStatus, evaluateBadges } from './domain/badge';
 import { evaluateAchievements } from './domain/evaluate';
 import { nextAvailableAchievements } from './domain/next-available';
@@ -12,8 +12,11 @@ import type { AchievementDefinition, BadgeDefinition, Metric, UserState } from '
 import type { AchievementsResponse } from './dto/achievements-response.dto';
 import { AchievementDefinitionEntity } from './entities/achievement-definition.entity';
 import { BadgeDefinitionEntity } from './entities/badge-definition.entity';
-import { UserAchievementEntity } from './entities/user-achievement.entity';
-import { UserBadgeEntity } from './entities/user-badge.entity';
+import { AchievementDefinitionRepository } from './repositories/achievement-definition.repository';
+import { BadgeDefinitionRepository } from './repositories/badge-definition.repository';
+import { UserAchievementRepository } from './repositories/user-achievement.repository';
+import { UserBadgeRepository } from './repositories/user-badge.repository';
+import { UserProgressRepository } from './repositories/user-progress.repository';
 
 /** Outcome of applying one purchase event, for the caller to emit events from. */
 export interface ApplyResult {
@@ -41,7 +44,14 @@ const toBadgeDefinition = (entity: BadgeDefinitionEntity): BadgeDefinition => ({
 @Injectable()
 export class AchievementsService {
   constructor(
-    private readonly dataSource: DataSource,
+    private readonly processedEvents: ProcessedEventRepository,
+    private readonly userProgress: UserProgressRepository,
+    private readonly achievementDefinitions: AchievementDefinitionRepository,
+    private readonly badgeDefinitions: BadgeDefinitionRepository,
+    private readonly userAchievements: UserAchievementRepository,
+    private readonly userBadges: UserBadgeRepository,
+    private readonly payouts: PayoutRepository,
+    private readonly users: UserRepository,
     @Inject(paymentsConfig.KEY)
     private readonly payments: ConfigType<typeof paymentsConfig>,
   ) {}
@@ -54,84 +64,54 @@ export class AchievementsService {
    * Returns `applied: false` without side effects if the event was already
    * processed. Callers emit domain events only after this resolves.
    */
+  @Transactional()
   async applyPurchaseEvent(eventId: string, userId: string): Promise<ApplyResult> {
-    return this.dataSource.transaction(async (manager) => {
-      // RETURNING makes the "already processed" case observable from the row
-      // count without a second round trip, and the whole statement is atomic.
-      const dedupeRows: { event_id: string }[] = await manager.query(
-        'INSERT INTO processed_events (event_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING event_id',
-        [eventId],
-      );
-      if (dedupeRows.length === 0) {
-        return { applied: false, unlockedAchievementNames: [], unlockedBadges: [] };
-      }
+    const isNewEvent = await this.processedEvents.recordEventIfNew(eventId);
+    if (!isNewEvent) {
+      return { applied: false, unlockedAchievementNames: [], unlockedBadges: [] };
+    }
 
-      // Increment-and-read in one statement takes the row lock that serialises
-      // concurrent purchases for this user, so no update is ever lost. Written as
-      // an upsert so a user without a progress row counts their first purchase
-      // rather than crashing on an absent row.
-      const progressRows: { purchase_count: number }[] = await manager.query(
-        `INSERT INTO user_progress (user_id, purchase_count) VALUES ($1, 1)
-         ON CONFLICT (user_id) DO UPDATE SET purchase_count = user_progress.purchase_count + 1
-         RETURNING purchase_count`,
-        [userId],
-      );
-      const purchaseCount = progressRows[0].purchase_count;
+    const purchaseCount = await this.userProgress.incrementPurchaseCount(userId);
 
-      const achievementDefinitions = (await manager.find(AchievementDefinitionEntity)).map(
-        toAchievementDefinition,
-      );
-      const badgeDefinitions = (await manager.find(BadgeDefinitionEntity)).map(toBadgeDefinition);
-      const unlockedAchievementKeys = (
-        await manager.find(UserAchievementEntity, { where: { userId } })
-      ).map((row) => row.achievementKey);
-      const earnedBadgeKeys = (await manager.find(UserBadgeEntity, { where: { userId } })).map(
-        (row) => row.badgeKey,
-      );
+    const achievementDefinitions = (await this.achievementDefinitions.listAll()).map(
+      toAchievementDefinition,
+    );
+    const badgeDefinitions = (await this.badgeDefinitions.listAll()).map(toBadgeDefinition);
+    const unlockedAchievementKeys = await this.userAchievements.listUnlockedKeys(userId);
+    const earnedBadgeKeys = await this.userBadges.listEarnedKeys(userId);
 
-      const state: UserState = {
-        progress: { purchaseCount },
-        unlockedAchievementKeys,
-        earnedBadgeKeys,
-      };
+    const state: UserState = {
+      progress: { purchaseCount },
+      unlockedAchievementKeys,
+      earnedBadgeKeys,
+    };
 
-      const newAchievements = evaluateAchievements(state, achievementDefinitions);
-      if (newAchievements.length > 0) {
-        await manager
-          .createQueryBuilder()
-          .insert()
-          .into(UserAchievementEntity)
-          .values(newAchievements.map((d) => ({ userId, achievementKey: d.key })))
-          .orIgnore()
-          .execute();
-      }
+    const newAchievements = evaluateAchievements(state, achievementDefinitions);
+    await this.userAchievements.insertNewAchievements(
+      userId,
+      newAchievements.map((d) => d.key),
+    );
 
-      // The badge ladder is measured against the unlocked count, including what
-      // was just inserted above, so a purchase that crosses both an achievement
-      // tier and a badge threshold in the same event unlocks both.
-      const stateAfterAchievements: UserState = {
-        ...state,
-        unlockedAchievementKeys: [...unlockedAchievementKeys, ...newAchievements.map((d) => d.key)],
-      };
-      const newBadges = evaluateBadges(stateAfterAchievements, badgeDefinitions);
-      if (newBadges.length > 0) {
-        await manager
-          .createQueryBuilder()
-          .insert()
-          .into(UserBadgeEntity)
-          .values(newBadges.map((d) => ({ userId, badgeKey: d.key })))
-          .orIgnore()
-          .execute();
-      }
+    // The badge ladder is measured against the unlocked count, including what
+    // was just inserted above, so a purchase that crosses both an achievement
+    // tier and a badge threshold in the same event unlocks both.
+    const stateAfterAchievements: UserState = {
+      ...state,
+      unlockedAchievementKeys: [...unlockedAchievementKeys, ...newAchievements.map((d) => d.key)],
+    };
+    const newBadges = evaluateBadges(stateAfterAchievements, badgeDefinitions);
+    await this.userBadges.insertNewBadges(
+      userId,
+      newBadges.map((d) => d.key),
+    );
 
-      const unlockedBadges = await this.writePayouts(manager, userId, newBadges);
+    const unlockedBadges = await this.writePayouts(userId, newBadges);
 
-      return {
-        applied: true,
-        unlockedAchievementNames: newAchievements.map((d) => d.name),
-        unlockedBadges,
-      };
-    });
+    return {
+      applied: true,
+      unlockedAchievementNames: newAchievements.map((d) => d.name),
+      unlockedBadges,
+    };
   }
 
   /**
@@ -140,30 +120,29 @@ export class AchievementsService {
    * — so a retry of this same event can never mint a second reference for it.
    */
   private async writePayouts(
-    manager: EntityManager,
     userId: string,
     newBadges: BadgeDefinition[],
   ): Promise<{ key: string; name: string; payoutId: string }[]> {
     const unlockedBadges: { key: string; name: string; payoutId: string }[] = [];
 
     for (const badge of newBadges) {
-      await manager
-        .createQueryBuilder()
-        .insert()
-        .into(PayoutEntity)
-        .values({
-          userId,
-          badgeKey: badge.key,
-          amountKobo: this.payments.cashbackAmountKobo,
-          status: 'pending',
-          providerReference: `${userId}:${badge.key}`,
-          attempts: 0,
-        })
-        .orIgnore()
-        .execute();
-
-      const payout = await manager.findOneOrFail(PayoutEntity, {
-        where: { userId, badgeKey: badge.key },
+      const payout = await this.payouts.insertPendingPayoutIfAbsent({
+        userId,
+        badgeKey: badge.key,
+        // `?? 30_000` mirrors the zod schema's own default in configuration.ts:
+        // `ConfigType`'s conditional type resolves this field as possibly
+        // `undefined` at this access site even though the schema guarantees a
+        // value, the same quirk `payouts.service.ts` works around for its own
+        // config fields.
+        amountKobo: this.payments.cashbackAmountKobo ?? 30_000,
+        // `_`, not `:`. Paystack rejects a reference containing a colon with
+        // "Your reference contains illegal special characters" (HTTP 400) on
+        // both /transfer and /transfer/verify — which strands the payout
+        // permanently, since an unknown reconciliation outcome is never
+        // terminal. Verified against the live API: `-` and `_` are accepted,
+        // `:` and `.` are not. Underscore keeps the separator unambiguous,
+        // because a UUID contains hyphens but never underscores.
+        providerReference: `${userId}_${badge.key}`,
       });
       unlockedBadges.push({ key: badge.key, name: badge.name, payoutId: payout.id });
     }
@@ -173,30 +152,20 @@ export class AchievementsService {
 
   /** Assembles the achievements view for a user. Throws NotFound for an unknown user. */
   async getAchievementsView(userId: string): Promise<AchievementsResponse> {
-    const user = await this.dataSource.getRepository(UserEntity).findOne({ where: { id: userId } });
-    if (!user) {
+    if (!(await this.users.exists(userId))) {
       throw new NotFoundException();
     }
 
-    const progress = await this.dataSource
-      .getRepository(UserProgressEntity)
-      .findOne({ where: { userId } });
-    const unlockedAchievementKeys = (
-      await this.dataSource.getRepository(UserAchievementEntity).find({ where: { userId } })
-    ).map((row) => row.achievementKey);
-    const earnedBadgeKeys = (
-      await this.dataSource.getRepository(UserBadgeEntity).find({ where: { userId } })
-    ).map((row) => row.badgeKey);
-    const achievementDefinitions = (
-      await this.dataSource.getRepository(AchievementDefinitionEntity).find()
-    ).map(toAchievementDefinition);
-    const badgeDefinitions = (
-      await this.dataSource.getRepository(BadgeDefinitionEntity).find()
-    ).map(toBadgeDefinition);
+    const purchaseCount = await this.userProgress.findPurchaseCount(userId);
+    const unlockedAchievementKeys = await this.userAchievements.listUnlockedKeys(userId);
+    const earnedBadgeKeys = await this.userBadges.listEarnedKeys(userId);
+    const achievementDefinitions = (await this.achievementDefinitions.listAll()).map(
+      toAchievementDefinition,
+    );
+    const badgeDefinitions = (await this.badgeDefinitions.listAll()).map(toBadgeDefinition);
 
     const state: UserState = {
-      // A user without a progress row (never purchased) reads as zero, not missing.
-      progress: { purchaseCount: progress?.purchaseCount ?? 0 },
+      progress: { purchaseCount },
       unlockedAchievementKeys,
       earnedBadgeKeys,
     };
