@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { z } from 'zod';
 
 /**
  * The response contract for `GET /users/:user/achievements`.
@@ -46,3 +47,21 @@ export class AchievementsResponse {
   })
   remaining_to_unlock_next_badge!: number;
 }
+
+/**
+ * The runtime guard for the same contract the class above documents.
+ *
+ * A plain `z.object` strips unknown keys, which is exactly what
+ * `ResponseSchemaInterceptor` needs: a field this contract never promised
+ * cannot reach a client, however the response came to carry it.
+ *
+ * The class and this schema are enforced by different mechanisms and can drift,
+ * so `achievements-response.spec.ts` asserts they describe the same keys.
+ */
+export const achievementsResponseSchema = z.object({
+  unlocked_achievements: z.array(z.string()),
+  next_available_achievements: z.array(z.string()),
+  current_badge: z.string(),
+  next_badge: z.string().nullable(),
+  remaining_to_unlock_next_badge: z.number().int(),
+});
