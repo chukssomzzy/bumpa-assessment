@@ -4,12 +4,12 @@ import { getQueueToken } from '@nestjs/bullmq';
 import { Test } from '@nestjs/testing';
 import type { Queue } from 'bullmq';
 import { DataSource } from 'typeorm';
-import { Clock } from '../../src/common/clock';
-import { EVALUATE_QUEUE, PAYOUT_QUEUE } from '../../src/common/queues';
-import { seedDemoUsers } from '../../src/database/seed';
-import { FakePaymentProvider } from '../../src/modules/payments/fake.provider';
-import { MutableClock } from './mutable-clock';
-import { TestAppModule } from './test-app.module';
+import { Clock } from '../../../../src/common/clock';
+import { EVALUATE_QUEUE, PAYOUT_QUEUE } from '../../../../src/common/queues';
+import { seedDemoUsers } from '../../../../src/database/seed';
+import { FakePaymentProvider } from '../../../../src/modules/payments/fake.provider';
+import { MutableClock } from '../../../setup/mutable-clock';
+import { TestAppModule } from '../../../setup/test-app.module';
 
 export interface TestContext {
   app: INestApplication;
