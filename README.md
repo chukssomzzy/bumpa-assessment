@@ -326,18 +326,18 @@ exercisable end to end against test keys.
 
 ```bash
 npm test                  # unit — pure domain logic, no I/O
-npm run test:integration  # Testcontainers: real Postgres + Redis
+npm run test:bdd          # Testcontainers: real Postgres + Redis
 npm run test:e2e          # end-to-end against the composed stack
 npm run test:cov          # coverage of the domain layer
 ```
 
 Three tiers, deliberately separated:
 
-| Tier               | Covers                                                | Runs on push         |
-| ------------------ | ----------------------------------------------------- | -------------------- |
-| `test`             | Pure rules functions, no I/O                          | yes                  |
-| `test:integration` | Repositories, processors, sweeper, concurrency        | yes                  |
-| `test:e2e`         | The composed stack over HTTP, real provider test keys | no — manual dispatch |
+| Tier       | Covers                                                | Runs on push         |
+| ---------- | ----------------------------------------------------- | -------------------- |
+| `test`     | Pure rules functions, no I/O                          | yes                  |
+| `test:bdd` | Repositories, processors, sweeper, concurrency        | yes                  |
+| `test:e2e` | The composed stack over HTTP, real provider test keys | no — manual dispatch |
 
 Integration tests run against **real** Postgres and Redis rather than sqlite or mocks, because the
 design rests on three Postgres behaviours — an exclusive row lock, `ON CONFLICT DO NOTHING`, and a

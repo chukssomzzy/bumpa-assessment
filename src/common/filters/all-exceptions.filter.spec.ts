@@ -14,12 +14,17 @@ import { AllExceptionsFilter } from './all-exceptions.filter';
  * exercise every branch of the filter directly.
  */
 
-function buildHost(): { host: ArgumentsHost; adapterHost: HttpAdapterHost; reply: jest.Mock } {
+type HttpAdapterDouble = {
+  reply: jest.Mock;
+  getRequestMethod: jest.Mock;
+  getRequestUrl: jest.Mock;
+};
+
+const makeSut = () => {
   const request = {};
   const response = {};
-  const reply = jest.fn();
-  const httpAdapter = {
-    reply,
+  const httpAdapter: HttpAdapterDouble = {
+    reply: jest.fn(),
     getRequestMethod: jest.fn(() => 'GET'),
     getRequestUrl: jest.fn(() => '/some/path'),
   };
@@ -30,105 +35,136 @@ function buildHost(): { host: ArgumentsHost; adapterHost: HttpAdapterHost; reply
       getResponse: () => response,
     }),
   } as unknown as ArgumentsHost;
-  return { host, adapterHost, reply };
-}
+  const logger = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
 
-describe('AllExceptionsFilter', () => {
-  let errorSpy: jest.SpyInstance;
+  return {
+    host,
+    httpAdapter,
+    logger,
+    filter: new AllExceptionsFilter(adapterHost),
+  };
+};
 
-  beforeEach(() => {
-    errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-  });
-
+describe('Feature: every uncaught exception becomes one error envelope', () => {
   afterEach(() => {
-    errorSpy.mockRestore();
+    // Restores, not merely clears: the Logger spy is installed on a shared
+    // prototype and would leak into the next test file otherwise.
+    jest.restoreAllMocks();
   });
 
-  it('envelopes an HttpException whose body is a plain string', () => {
-    const { host, adapterHost, reply } = buildHost();
-    const filter = new AllExceptionsFilter(adapterHost);
+  describe('Scenario: an HttpException carries a plain string body', () => {
+    it('envelopes the string as the message', () => {
+      // Given
+      const { host, httpAdapter, filter } = makeSut();
 
-    filter.catch(new HttpException('plain message', HttpStatus.BAD_REQUEST), host);
+      // When
+      filter.catch(new HttpException('plain message', HttpStatus.BAD_REQUEST), host);
 
-    expect(reply).toHaveBeenCalledWith(
-      {},
-      { success: false, statusCode: 400, message: 'plain message' },
-      400,
-    );
+      // Then
+      expect(httpAdapter.reply).toHaveBeenCalledWith(
+        {},
+        { success: false, statusCode: 400, message: 'plain message' },
+        400,
+      );
+    });
   });
 
-  it('envelopes a built-in HttpException with an object body, without an errors key', () => {
-    const { host, adapterHost, reply } = buildHost();
-    const filter = new AllExceptionsFilter(adapterHost);
+  describe('Scenario: a built-in HttpException carries an object body', () => {
+    it('envelopes the body without an errors key', () => {
+      // Given
+      const { host, httpAdapter, filter } = makeSut();
 
-    filter.catch(new NotFoundException(), host);
+      // When
+      filter.catch(new NotFoundException(), host);
 
-    expect(reply).toHaveBeenCalledWith(
-      {},
-      { success: false, statusCode: 404, message: 'Not Found' },
-      404,
-    );
+      // Then
+      expect(httpAdapter.reply).toHaveBeenCalledWith(
+        {},
+        { success: false, statusCode: 404, message: 'Not Found' },
+        404,
+      );
+    });
   });
 
-  it('surfaces a validation-style array message as the structured errors field', () => {
-    const { host, adapterHost, reply } = buildHost();
-    const filter = new AllExceptionsFilter(adapterHost);
+  describe('Scenario: a validation failure carries an array of messages', () => {
+    it('surfaces the array as the structured errors field', () => {
+      // Given
+      const { host, httpAdapter, filter } = makeSut();
 
-    filter.catch(new BadRequestException(['field a is required', 'field b is invalid']), host);
+      // When
+      filter.catch(new BadRequestException(['field a is required', 'field b is invalid']), host);
 
-    expect(reply).toHaveBeenCalledWith(
-      {},
-      {
-        success: false,
-        statusCode: 400,
-        message: 'Bad Request',
-        errors: ['field a is required', 'field b is invalid'],
-      },
-      400,
-    );
+      // Then
+      expect(httpAdapter.reply).toHaveBeenCalledWith(
+        {},
+        {
+          success: false,
+          statusCode: 400,
+          message: 'Bad Request',
+          errors: ['field a is required', 'field b is invalid'],
+        },
+        400,
+      );
+    });
   });
 
-  it('never leaks internal error text for a non-HttpException throwable', () => {
-    const { host, adapterHost, reply } = buildHost();
-    const filter = new AllExceptionsFilter(adapterHost);
+  describe('Scenario: a non-HttpException throwable reaches the filter', () => {
+    it('never leaks the internal error text', () => {
+      // Given
+      const { host, httpAdapter, filter } = makeSut();
 
-    filter.catch(new Error('leaked db connection string: postgres://...'), host);
+      // When
+      filter.catch(new Error('leaked db connection string: postgres://...'), host);
 
-    expect(reply).toHaveBeenCalledWith(
-      {},
-      { success: false, statusCode: 500, message: 'Internal server error' },
-      500,
-    );
+      // Then
+      expect(httpAdapter.reply).toHaveBeenCalledWith(
+        {},
+        { success: false, statusCode: 500, message: 'Internal server error' },
+        500,
+      );
+    });
   });
 
-  it('never leaks internal error text for a thrown non-Error value', () => {
-    const { host, adapterHost, reply } = buildHost();
-    const filter = new AllExceptionsFilter(adapterHost);
+  describe('Scenario: a thrown value is not an Error at all', () => {
+    it('never leaks the thrown value', () => {
+      // Given
+      const { host, httpAdapter, filter } = makeSut();
 
-    filter.catch('a bare string throw', host);
+      // When
+      filter.catch('a bare string throw', host);
 
-    expect(reply).toHaveBeenCalledWith(
-      {},
-      { success: false, statusCode: 500, message: 'Internal server error' },
-      500,
-    );
+      // Then
+      expect(httpAdapter.reply).toHaveBeenCalledWith(
+        {},
+        { success: false, statusCode: 500, message: 'Internal server error' },
+        500,
+      );
+    });
   });
 
-  it('logs at error level for a 5xx response', () => {
-    const { host, adapterHost } = buildHost();
-    const filter = new AllExceptionsFilter(adapterHost);
+  describe('Scenario: the envelope carries a 5xx status', () => {
+    it('logs the failure at error level', () => {
+      // Given
+      const { host, logger, filter } = makeSut();
 
-    filter.catch(new Error('boom'), host);
+      // When
+      filter.catch(new Error('boom'), host);
 
-    expect(errorSpy).toHaveBeenCalledTimes(1);
+      // Then
+      expect(logger).toHaveBeenCalledTimes(1);
+    });
   });
 
-  it('does not log at error level for a 4xx response', () => {
-    const { host, adapterHost } = buildHost();
-    const filter = new AllExceptionsFilter(adapterHost);
+  describe('Scenario: the envelope carries a 4xx status', () => {
+    it('does not log expected client traffic at error level', () => {
+      // Given
+      const { host, logger, filter } = makeSut();
 
-    filter.catch(new NotFoundException(), host);
+      // When
+      filter.catch(new NotFoundException(), host);
 
-    expect(errorSpy).not.toHaveBeenCalled();
+      // Then
+      expect(logger).not.toHaveBeenCalled();
+    });
   });
 });

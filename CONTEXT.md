@@ -9,8 +9,9 @@ logs, Jest for all three test tiers. Node 24, npm (no yarn/pnpm).
 
 ## Commands & traps
 
-- `npm test` — unit (`src/**/*.spec.ts`). `npm run test:integration` — real Postgres/Redis via
-  Testcontainers, `--runInBand` (don't parallelize; they share containers). `npm run test:e2e` —
+- `npm test` — unit (`src/**/*.spec.ts`). `npm run test:bdd` (alias: `test:integration`) — real
+  Postgres/Redis via Testcontainers, `--runInBand` (don't parallelize; they share containers).
+  `npm run test:e2e` —
   manual only, hits a running `docker compose` stack with real provider credentials.
 - **Piping any of the above through `tail`/`head`/`grep` hides the real exit code.** Run unpiped.
 - Integration tests spin up Docker containers on first run; expect ~10s+ before output starts.
@@ -137,15 +138,41 @@ Paystack's `timestamp: false` is not an oversight — it sends no timestamp head
 `PAYSTACK_SECRET_KEY` rejects every webhook rather than accepting an empty-keyed digest. The two
 schemes must never be interchangeable; `src/common/security/hmac.spec.ts` pins that both ways.
 
+## Test conventions
+
+Every tier is BDD-shaped: `describe('Feature: ...')` → `describe('Scenario: ...')` → `it(...)`, with
+`// Given`, `// When`, `// Then` sections inside each test. Unit `it` titles state the outcome; BDD
+and e2e `it` titles are full `Given ..., When ..., Then ...` sentences.
+
+The BDD tier hands each spec a `BddWorld` (`test/bdd/support/application/bdd-world.ts`):
+`beforeAll(createBddWorld)`, `beforeEach(world.resetScenario)`, `afterEach(world.verifyScenario)`,
+`afterAll(world.close)`. **`createBddWorld` is a facade over `app-harness.ts`, not a replacement.**
+That harness carries fixes nothing pins: `app.listen(0)` rather than `init()` (supertest's lazy
+listen races under concurrency), the `40P01` deadlock retry, `clearQueues` waiting on active jobs,
+and the reset → clear → resume ordering. Do not re-derive it.
+
+`verifyScenario()` is intentionally a no-op — there is no outbound stub contract here; the only
+outbound boundary is `FakePaymentProvider`, asserted inline via `world.provider.attempted` next to
+the behaviour it pins.
+
+Per-feature `fixtures.ts` files hold the `givenX` / `readX` / `expectX` steps. Setup that has to
+happen in a particular order lives there with its reasoning, e.g. `givenPendingPayout` pauses the
+payout queue _before_ posting purchases, because the worker otherwise settles the row in
+milliseconds.
+
+Two deliberate divergences from the reference standard this was modelled on: `maxWorkers: 1` stays
+(suites share one Testcontainers pair), and there is no globalSetup/globalTeardown, swagger
+transformer or worker-count machinery — those solve problems this repo does not have.
+
 ## The three test tiers
 
 - **Unit** (`src/**/*.spec.ts`, `npm test`): pure functions and anything mockable without a real
   Nest app — `domain/`, the exception filter (mocked `ArgumentsHost`/`HttpAdapterHost`, no boot).
   Fast, no I/O.
-- **Integration** (`test/integration/*.spec.ts`, `npm run test:integration`): real Postgres +
+- **BDD** (`test/bdd/**/*.bdd-spec.ts`, `npm run test:bdd`): real Postgres +
   Redis via Testcontainers, `TestAppModule` (api + worker graphs combined), HTTP via `supertest`.
   This is where queue draining, concurrency, and the HMAC boundary are exercised.
-- **E2E** (`test/e2e/*.spec.ts`, `npm run test:e2e`, manual workflow only): a real `docker compose`
+- **E2E** (`test/e2e/*.e2e.spec.ts`, `npm run test:e2e`, manual workflow only): a real `docker compose`
   stack with real Paystack credentials. Not run in normal CI. `payout-webhook.e2e.spec.ts`
   additionally needs `--profile tunnel` and waits on a webhook Paystack genuinely delivers — see its
   header for the four prerequisites. It asserts on the **receipt row**, never on payout status:

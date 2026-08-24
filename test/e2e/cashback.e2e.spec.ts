@@ -1,5 +1,16 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
+import {
+  API,
+  AchievementsView,
+  connectDatabase,
+  givenPayableUser,
+  readAchievementsView,
+  sleep,
+  untilView,
+  whenEventIsPosted,
+  whenPurchaseIsPosted,
+} from './fixtures';
 
 /**
  * Drives the composed stack over HTTP — api, worker, migrate, postgres, redis —
@@ -8,129 +19,98 @@ import { Client } from 'pg';
  *
  * Prerequisites: `docker compose up -d --wait`, and WEBHOOK_SECRET matching the
  * stack's .env (loaded automatically by `test/setup/e2e-env.ts`).
- *
- * Provisions its own user per run rather than using a seeded demo user. The
- * assertions below are absolute — "starts at Beginner", "ends at Intermediate"
- * — so against a long-lived stack a shared user carries state from the previous
- * run and the suite passes exactly once, then fails forever on a database that
- * is behaving perfectly correctly.
  */
-const API = process.env.API_URL ?? 'http://localhost:3000';
-const SECRET = process.env.WEBHOOK_SECRET ?? 'dev-webhook-secret-change-me';
-const USER = randomUUID();
-const DATABASE_URL = process.env.E2E_DATABASE_URL ?? 'postgres://bumpa:bumpa@localhost:5432/bumpa';
+describe('Feature: earning badges and cashback from purchases', () => {
+  let db: Client;
+  let customer: string;
 
-let db: Client;
-
-beforeAll(async () => {
-  db = new Client({ connectionString: DATABASE_URL });
-  await db.connect();
-  // 044/0000000000 is a combination Paystack test mode will actually resolve;
-  // most will not. See DEMO_USERS in `src/database/seeds/definitions.ts`.
-  await db.query(
-    `INSERT INTO users (id, name, email, bank_code, account_number)
-     VALUES ($1, $2, $3, '044', '0000000000') ON CONFLICT (id) DO NOTHING`,
-    [USER, 'E2E Cashback', `e2e-cashback-${USER}@example.test`],
-  );
-});
-
-afterAll(async () => {
-  await db?.end();
-});
-
-function post(body: unknown, secretOverride?: string) {
-  const raw = JSON.stringify(body);
-  const secret = secretOverride ?? SECRET;
-  const timestamp = Math.floor(Date.now() / 1000);
-  return fetch(`${API}/events`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-signature': createHmac('sha512', secret).update(`${timestamp}.${raw}`).digest('hex'),
-      'x-timestamp': String(timestamp),
-    },
-    body: raw,
+  beforeAll(async () => {
+    db = await connectDatabase();
+    customer = await givenPayableUser(db, 'E2E Cashback');
   });
-}
 
-const purchase = () => ({
-  type: 'purchase.completed',
-  eventId: randomUUID(),
-  userId: USER,
-  occurredAt: new Date().toISOString(),
-});
+  afterAll(async () => {
+    await db?.end();
+  });
 
-interface View {
-  unlocked_achievements: string[];
-  next_available_achievements: string[];
-  current_badge: string;
-  next_badge: string | null;
-  remaining_to_unlock_next_badge: number;
-}
+  describe('Scenario: a purchase event arrives unsigned', () => {
+    it('Given a running stack, When a purchase is posted with no signature, Then it is rejected as unauthorized', async () => {
+      // Given
+      const raw = JSON.stringify({
+        type: 'purchase.completed',
+        eventId: randomUUID(),
+        userId: customer,
+        occurredAt: new Date().toISOString(),
+      });
 
-const view = async (): Promise<View> =>
-  (await fetch(`${API}/users/${USER}/achievements`)).json() as Promise<View>;
+      // When
+      const response = await fetch(`${API}/events`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: raw,
+      });
 
-async function until(predicate: (v: View) => boolean, timeoutMs = 60_000): Promise<View> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const current = await view();
-    if (predicate(current)) return current;
-    if (Date.now() > deadline) {
-      throw new Error(`condition not met; last view: ${JSON.stringify(current)}`);
-    }
-    await new Promise((r) => setTimeout(r, 500));
-  }
-}
-
-describe('cashback, end to end', () => {
-  it('rejects an unsigned request', async () => {
-    const raw = JSON.stringify(purchase());
-    const response = await fetch(`${API}/events`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: raw,
+      // Then
+      expect(response.status).toBe(401);
     });
-
-    expect(response.status).toBe(401);
   });
 
-  it('rejects a request signed with the wrong secret', async () => {
-    expect((await post(purchase(), 'not-the-secret')).status).toBe(401);
+  describe('Scenario: a purchase event is signed with the wrong secret', () => {
+    it('Given a running stack, When a purchase is signed with a secret the stack does not hold, Then it is rejected as unauthorized', async () => {
+      // Given / When
+      const response = await whenPurchaseIsPosted(customer, 'not-the-secret');
+
+      // Then
+      expect(response.status).toBe(401);
+    });
   });
 
-  it('earns a badge and pays cashback across a run of purchases', async () => {
-    const before = await view();
-    expect(before.current_badge).toBe('Beginner');
+  describe('Scenario: a customer purchases enough to cross a badge threshold', () => {
+    it('Given a customer at the Beginner badge, When twelve purchases are ingested, Then the Intermediate badge and its cashback are earned', async () => {
+      // Given
+      const before = await readAchievementsView(customer);
+      expect(before.current_badge).toBe('Beginner');
 
-    // Twelve purchases crosses the 1, 3, 5 and 10 tiers: four achievements,
-    // which is exactly the Intermediate requirement.
-    for (let i = 0; i < 12; i++) {
-      expect((await post(purchase())).status).toBe(202);
-    }
+      // When
+      // Twelve purchases crosses the 1, 3, 5 and 10 tiers: four achievements,
+      // which is exactly the Intermediate requirement.
+      for (let i = 0; i < 12; i++) {
+        expect((await whenPurchaseIsPosted(customer)).status).toBe(202);
+      }
+      const after = await untilView(customer, (v) => v.current_badge === 'Intermediate');
 
-    const after = await until((v) => v.current_badge === 'Intermediate');
-
-    expect(after.unlocked_achievements).toEqual(
-      expect.arrayContaining(['First Purchase', '5 Purchases', '10 Purchases']),
-    );
-    // Only the next tier of the group, never the whole remaining ladder.
-    expect(after.next_available_achievements).toEqual(['15 Purchases']);
-    expect(after.next_badge).toBe('Advanced');
-    expect(after.remaining_to_unlock_next_badge).toBe(4);
+      // Then
+      expect(after.unlocked_achievements).toEqual(
+        expect.arrayContaining(['First Purchase', '5 Purchases', '10 Purchases']),
+      );
+      // Only the next tier of the group, never the whole remaining ladder.
+      expect(after.next_available_achievements).toEqual(['15 Purchases']);
+      expect(after.next_badge).toBe('Advanced');
+      expect(after.remaining_to_unlock_next_badge).toBe(4);
+    });
   });
 
-  it('ignores a redelivered event', async () => {
-    // The view exposes no raw counter, so settle explicitly rather than racing
-    // the worker: the assertion is that a redelivery changes nothing.
-    const event = purchase();
-    expect((await post(event)).status).toBe(202);
-    await new Promise((r) => setTimeout(r, 3000));
-    const afterFirstDelivery = await view();
+  describe('Scenario: the storefront redelivers an event it already sent', () => {
+    it('Given a purchase event already ingested and settled, When the identical event is delivered again, Then the customer view is unchanged', async () => {
+      // Given
+      // The view exposes no raw counter, so settle explicitly rather than racing
+      // the worker: the assertion is that a redelivery changes nothing.
+      const raw = JSON.stringify({
+        type: 'purchase.completed',
+        eventId: randomUUID(),
+        userId: customer,
+        occurredAt: new Date().toISOString(),
+      });
+      expect((await whenEventIsPosted(raw)).status).toBe(202);
+      await sleep(3000);
+      const afterFirstDelivery: AchievementsView = await readAchievementsView(customer);
 
-    expect((await post(event)).status).toBe(202);
-    await new Promise((r) => setTimeout(r, 3000));
+      // When
+      expect((await whenEventIsPosted(raw)).status).toBe(202);
+      await sleep(3000);
 
-    expect(await view()).toEqual(afterFirstDelivery);
+      // Then
+      expect(await readAchievementsView(customer)).toEqual(afterFirstDelivery);
+    });
   });
 });

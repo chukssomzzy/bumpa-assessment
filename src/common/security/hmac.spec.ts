@@ -37,78 +37,172 @@ const signedForStorefront = (body = BODY, timestamp = NOW) =>
 const signedForPaystack = (body = BODY) =>
   request({ 'x-paystack-signature': hmacDigest(paystack, body) }, body);
 
-describe('verifyHmac', () => {
-  it('accepts a request signed under its own scheme', () => {
-    expect(verifyHmac(storefront, signedForStorefront(), NOW)).toBe(true);
-    expect(verifyHmac(paystack, signedForPaystack(), NOW)).toBe(true);
+describe('Feature: hmac verification of signed webhook requests', () => {
+  describe('Scenario: a request is signed under its own scheme', () => {
+    it('accepts the storefront request and the paystack request alike', () => {
+      // Given
+      const storefrontRequest = signedForStorefront();
+      const paystackRequest = signedForPaystack();
+
+      // When
+      const storefrontAccepted = verifyHmac(storefront, storefrontRequest, NOW);
+      const paystackAccepted = verifyHmac(paystack, paystackRequest, NOW);
+
+      // Then
+      expect(storefrontAccepted).toBe(true);
+      expect(paystackAccepted).toBe(true);
+    });
   });
 
   // The whole point of parameterising the guard: two senders share a service
   // and must not be interchangeable, even holding the same secret.
-  it('rejects a storefront-signed request under the paystack scheme', () => {
-    expect(verifyHmac(paystack, signedForStorefront(), NOW)).toBe(false);
+  describe('Scenario: a storefront-signed request is presented under the paystack scheme', () => {
+    it('rejects the request', () => {
+      // Given
+      const storefrontRequest = signedForStorefront();
+
+      // When
+      const accepted = verifyHmac(paystack, storefrontRequest, NOW);
+
+      // Then
+      expect(accepted).toBe(false);
+    });
   });
 
-  it('rejects a paystack-signed request under the storefront scheme', () => {
-    expect(verifyHmac(storefront, signedForPaystack(), NOW)).toBe(false);
+  describe('Scenario: a paystack-signed request is presented under the storefront scheme', () => {
+    it('rejects the request', () => {
+      // Given
+      const paystackRequest = signedForPaystack();
+
+      // When
+      const accepted = verifyHmac(storefront, paystackRequest, NOW);
+
+      // Then
+      expect(accepted).toBe(false);
+    });
   });
 
-  it('fails closed when no secret is configured', () => {
-    const unconfigured: HmacScheme = { ...paystack, secret: undefined };
-    // Signed with the empty-key digest an attacker could compute unaided.
-    const forged = request({ 'x-paystack-signature': hmacDigest(paystack, BODY) });
+  describe('Scenario: the scheme has no secret configured', () => {
+    it('fails closed instead of accepting an empty-keyed digest', () => {
+      // Given
+      const unconfigured: HmacScheme = { ...paystack, secret: undefined };
+      // Signed with the empty-key digest an attacker could compute unaided.
+      const forged = request({ 'x-paystack-signature': hmacDigest(paystack, BODY) });
 
-    expect(verifyHmac(unconfigured, forged, NOW)).toBe(false);
+      // When
+      const accepted = verifyHmac(unconfigured, forged, NOW);
+
+      // Then
+      expect(accepted).toBe(false);
+    });
   });
 
-  it('rejects a tampered body', () => {
-    const signed = signedForPaystack();
-    signed.rawBody = Buffer.from(JSON.stringify({ event: 'transfer.failed' }));
+  describe('Scenario: the body is altered after it was signed', () => {
+    it('rejects the tampered body', () => {
+      // Given
+      const signed = signedForPaystack();
+      signed.rawBody = Buffer.from(JSON.stringify({ event: 'transfer.failed' }));
 
-    expect(verifyHmac(paystack, signed, NOW)).toBe(false);
+      // When
+      const accepted = verifyHmac(paystack, signed, NOW);
+
+      // Then
+      expect(accepted).toBe(false);
+    });
   });
 
-  it('rejects a missing or non-hex signature', () => {
-    expect(verifyHmac(paystack, request({}), NOW)).toBe(false);
-    expect(verifyHmac(paystack, request({ 'x-paystack-signature': 'not-hex!' }), NOW)).toBe(false);
+  describe('Scenario: the signature header is missing or not hexadecimal', () => {
+    it('rejects the request in either case', () => {
+      // Given
+      const unsigned = request({});
+      const malformed = request({ 'x-paystack-signature': 'not-hex!' });
+
+      // When
+      const unsignedAccepted = verifyHmac(paystack, unsigned, NOW);
+      const malformedAccepted = verifyHmac(paystack, malformed, NOW);
+
+      // Then
+      expect(unsignedAccepted).toBe(false);
+      expect(malformedAccepted).toBe(false);
+    });
   });
 
-  it('rejects an absent raw body rather than signing over nothing', () => {
-    const headers = { 'x-paystack-signature': hmacDigest(paystack, BODY) };
-    expect(verifyHmac(paystack, request(headers, null), NOW)).toBe(false);
+  describe('Scenario: the raw body never reached the verifier', () => {
+    it('rejects the request rather than signing over nothing', () => {
+      // Given
+      const headers = { 'x-paystack-signature': hmacDigest(paystack, BODY) };
+      const bodyless = request(headers, null);
+
+      // When
+      const accepted = verifyHmac(paystack, bodyless, NOW);
+
+      // Then
+      expect(accepted).toBe(false);
+    });
   });
 
-  describe('timestamp binding', () => {
-    it('rejects a timestamp outside the tolerance window', () => {
+  describe('Scenario: a bound timestamp falls outside the tolerance window', () => {
+    it('rejects the stale request', () => {
+      // Given
       const stale = signedForStorefront(BODY, NOW - 301);
-      expect(verifyHmac(storefront, stale, NOW)).toBe(false);
-    });
 
-    it('accepts skew in either direction within tolerance', () => {
-      expect(verifyHmac(storefront, signedForStorefront(BODY, NOW - 299), NOW)).toBe(true);
-      expect(verifyHmac(storefront, signedForStorefront(BODY, NOW + 299), NOW)).toBe(true);
-    });
+      // When
+      const accepted = verifyHmac(storefront, stale, NOW);
 
-    // Rewriting x-timestamp must invalidate the signature; otherwise the
-    // freshness window is unauthenticated and replay is unbounded.
-    it('rejects a replay that rewrites the timestamp header', () => {
+      // Then
+      expect(accepted).toBe(false);
+    });
+  });
+
+  describe('Scenario: a bound timestamp is skewed but still within tolerance', () => {
+    it('accepts skew in either direction', () => {
+      // Given
+      const behind = signedForStorefront(BODY, NOW - 299);
+      const ahead = signedForStorefront(BODY, NOW + 299);
+
+      // When
+      const behindAccepted = verifyHmac(storefront, behind, NOW);
+      const aheadAccepted = verifyHmac(storefront, ahead, NOW);
+
+      // Then
+      expect(behindAccepted).toBe(true);
+      expect(aheadAccepted).toBe(true);
+    });
+  });
+
+  // Rewriting x-timestamp must invalidate the signature; otherwise the
+  // freshness window is unauthenticated and replay is unbounded.
+  describe('Scenario: a captured request is replayed with a rewritten timestamp header', () => {
+    it('rejects the replay', () => {
+      // Given
       const captured = signedForStorefront(BODY, NOW - 10_000);
       const replayed = request(
         { 'x-signature': captured.header('x-signature'), 'x-timestamp': String(NOW) },
         BODY,
       );
 
-      expect(verifyHmac(storefront, replayed, NOW)).toBe(false);
-    });
+      // When
+      const accepted = verifyHmac(storefront, replayed, NOW);
 
-    it('ignores timestamp headers entirely when the scheme does not bind one', () => {
+      // Then
+      expect(accepted).toBe(false);
+    });
+  });
+
+  describe('Scenario: the scheme binds no timestamp at all', () => {
+    it('ignores timestamp headers entirely', () => {
+      // Given
       const signed = signedForPaystack();
       const withNoise = request(
         { 'x-paystack-signature': signed.header('x-paystack-signature'), 'x-timestamp': '1' },
         BODY,
       );
 
-      expect(verifyHmac(paystack, withNoise, NOW)).toBe(true);
+      // When
+      const accepted = verifyHmac(paystack, withNoise, NOW);
+
+      // Then
+      expect(accepted).toBe(true);
     });
   });
 });

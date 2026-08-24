@@ -62,88 +62,138 @@ function makeState(overrides: Partial<UserState> = {}): UserState {
   };
 }
 
-describe('evaluateAchievements', () => {
-  it('returns nothing when purchase count is zero', () => {
-    const state = makeState({ progress: { purchaseCount: 0 } });
+describe('Feature: achievements unlock as a purchase count crosses thresholds', () => {
+  describe('Scenario: the user has made no purchases', () => {
+    it('returns nothing', () => {
+      // Given
+      const state = makeState({ progress: { purchaseCount: 0 } });
 
-    expect(evaluateAchievements(state, ACHIEVEMENTS)).toEqual([]);
-  });
+      // When
+      const unlocked = evaluateAchievements(state, ACHIEVEMENTS);
 
-  it('returns the first tier once the threshold is met with nothing unlocked', () => {
-    const state = makeState({ progress: { purchaseCount: 1 } });
-
-    expect(evaluateAchievements(state, ACHIEVEMENTS)).toEqual([FIRST_PURCHASE]);
-  });
-
-  it('returns only the newly crossed tier when a lower tier is already unlocked', () => {
-    const state = makeState({
-      progress: { purchaseCount: 5 },
-      unlockedAchievementKeys: ['first_purchase'],
+      // Then
+      expect(unlocked).toEqual([]);
     });
-
-    expect(evaluateAchievements(state, ACHIEVEMENTS)).toEqual([FIVE_PURCHASES]);
   });
 
-  it('backfills every tier crossed at once, ordered by tier ascending', () => {
-    const state = makeState({ progress: { purchaseCount: 10 } });
+  describe('Scenario: the first threshold is met with nothing unlocked yet', () => {
+    it('returns the first tier', () => {
+      // Given
+      const state = makeState({ progress: { purchaseCount: 1 } });
 
-    expect(evaluateAchievements(state, ACHIEVEMENTS)).toEqual([
-      FIRST_PURCHASE,
-      FIVE_PURCHASES,
-      TEN_PURCHASES,
-    ]);
-  });
+      // When
+      const unlocked = evaluateAchievements(state, ACHIEVEMENTS);
 
-  it('returns nothing when every achievement is already unlocked', () => {
-    const state = makeState({
-      progress: { purchaseCount: 10 },
-      unlockedAchievementKeys: ['first_purchase', 'five_purchases', 'ten_purchases'],
+      // Then
+      expect(unlocked).toEqual([FIRST_PURCHASE]);
     });
-
-    expect(evaluateAchievements(state, ACHIEVEMENTS)).toEqual([]);
   });
 
-  it('returns nothing when there are no definitions to evaluate', () => {
-    const state = makeState({ progress: { purchaseCount: 100 } });
+  describe('Scenario: a lower tier of the group is already unlocked', () => {
+    it('returns only the newly crossed tier', () => {
+      // Given
+      const state = makeState({
+        progress: { purchaseCount: 5 },
+        unlockedAchievementKeys: ['first_purchase'],
+      });
 
-    expect(evaluateAchievements(state, [])).toEqual([]);
-  });
+      // When
+      const unlocked = evaluateAchievements(state, ACHIEVEMENTS);
 
-  it('orders newly crossed achievements by group key then tier across multiple groups', () => {
-    const definitions: readonly AchievementDefinition[] = [
-      BIG_SPEND,
-      TEN_PURCHASES,
-      FIRST_SPEND,
-      FIRST_PURCHASE,
-      FIVE_PURCHASES,
-    ];
-    const state = makeState({ progress: { purchaseCount: 10 } });
-
-    expect(evaluateAchievements(state, definitions)).toEqual([
-      FIRST_PURCHASE,
-      FIVE_PURCHASES,
-      TEN_PURCHASES,
-      FIRST_SPEND,
-      BIG_SPEND,
-    ]);
-  });
-
-  it('does not mutate the user state or the definitions passed in', () => {
-    const state = makeState({
-      progress: { purchaseCount: 5 },
-      unlockedAchievementKeys: ['first_purchase'],
+      // Then
+      expect(unlocked).toEqual([FIVE_PURCHASES]);
     });
-    const definitions: readonly AchievementDefinition[] = [
-      FIRST_PURCHASE,
-      FIVE_PURCHASES,
-      TEN_PURCHASES,
-    ];
-    const stateSnapshot = JSON.parse(JSON.stringify(state));
-    const definitionsSnapshot = JSON.parse(JSON.stringify(definitions));
+  });
 
-    evaluateAchievements(state, definitions);
+  describe('Scenario: the purchase count jumps past several thresholds at once', () => {
+    it('backfills every tier crossed, ordered by tier ascending', () => {
+      // Given
+      const state = makeState({ progress: { purchaseCount: 10 } });
 
-    expect(state).toEqual(stateSnapshot);
-    expect(definitions).toEqual(definitionsSnapshot);
+      // When
+      const unlocked = evaluateAchievements(state, ACHIEVEMENTS);
+
+      // Then
+      expect(unlocked).toEqual([FIRST_PURCHASE, FIVE_PURCHASES, TEN_PURCHASES]);
+    });
+  });
+
+  describe('Scenario: every achievement is already unlocked', () => {
+    it('returns nothing', () => {
+      // Given
+      const state = makeState({
+        progress: { purchaseCount: 10 },
+        unlockedAchievementKeys: ['first_purchase', 'five_purchases', 'ten_purchases'],
+      });
+
+      // When
+      const unlocked = evaluateAchievements(state, ACHIEVEMENTS);
+
+      // Then
+      expect(unlocked).toEqual([]);
+    });
+  });
+
+  describe('Scenario: there are no definitions to evaluate', () => {
+    it('returns nothing', () => {
+      // Given
+      const state = makeState({ progress: { purchaseCount: 100 } });
+
+      // When
+      const unlocked = evaluateAchievements(state, []);
+
+      // Then
+      expect(unlocked).toEqual([]);
+    });
+  });
+
+  describe('Scenario: definitions from several groups arrive out of order', () => {
+    it('orders newly crossed achievements by group key then tier', () => {
+      // Given
+      const definitions: readonly AchievementDefinition[] = [
+        BIG_SPEND,
+        TEN_PURCHASES,
+        FIRST_SPEND,
+        FIRST_PURCHASE,
+        FIVE_PURCHASES,
+      ];
+      const state = makeState({ progress: { purchaseCount: 10 } });
+
+      // When
+      const unlocked = evaluateAchievements(state, definitions);
+
+      // Then
+      expect(unlocked).toEqual([
+        FIRST_PURCHASE,
+        FIVE_PURCHASES,
+        TEN_PURCHASES,
+        FIRST_SPEND,
+        BIG_SPEND,
+      ]);
+    });
+  });
+
+  describe('Scenario: the caller reuses the state and definitions afterwards', () => {
+    it('does not mutate the user state or the definitions passed in', () => {
+      // Given
+      const state = makeState({
+        progress: { purchaseCount: 5 },
+        unlockedAchievementKeys: ['first_purchase'],
+      });
+      const definitions: readonly AchievementDefinition[] = [
+        FIRST_PURCHASE,
+        FIVE_PURCHASES,
+        TEN_PURCHASES,
+      ];
+      const stateSnapshot = JSON.parse(JSON.stringify(state));
+      const definitionsSnapshot = JSON.parse(JSON.stringify(definitions));
+
+      // When
+      evaluateAchievements(state, definitions);
+
+      // Then
+      expect(state).toEqual(stateSnapshot);
+      expect(definitions).toEqual(definitionsSnapshot);
+    });
   });
 });
