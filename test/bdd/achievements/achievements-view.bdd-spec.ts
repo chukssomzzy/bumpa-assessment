@@ -29,6 +29,29 @@ describe("Feature: viewing a user's achievements, badges and progress", () => {
   afterEach(() => world.verifyScenario());
   afterAll(async () => world?.close());
 
+  describe('Scenario: the response must carry exactly the contracted fields', () => {
+    it('Given any user, When their achievements are requested, Then the body has exactly the five contracted keys and nothing else', async () => {
+      // Given
+      // (any user will do — this pins the envelope, not the values)
+
+      // When
+      const response = await readAchievements(world, OTHER_USER_ID);
+
+      // Then
+      // Every other scenario asserts fields individually, which cannot catch an
+      // ADDED key — so a leaked internal field would pass the whole suite. This
+      // is the assertion that fails when the response grows something the
+      // contract never promised.
+      expect(Object.keys(response.body as object).sort()).toEqual([
+        'current_badge',
+        'next_available_achievements',
+        'next_badge',
+        'remaining_to_unlock_next_badge',
+        'unlocked_achievements',
+      ]);
+    });
+  });
+
   describe('Scenario: a freshly seeded user has done nothing yet', () => {
     it('Given a user seeded with no purchases, When their achievements are requested, Then nothing is unlocked and only First Purchase is offered next', async () => {
       // Given

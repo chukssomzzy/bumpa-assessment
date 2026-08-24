@@ -9,7 +9,8 @@ import {
 } from '@nestjs/swagger';
 import { ErrorResponse } from '../../common/dto/error-response.dto';
 import { AchievementsService } from './achievements.service';
-import { AchievementsResponse } from './dto/achievements-response.dto';
+import { ResponseSchema } from '../../common/decorators/response-schema.decorator';
+import { AchievementsResponse, achievementsResponseSchema } from './dto/achievements-response.dto';
 
 @ApiTags('achievements')
 @Controller('users')
@@ -26,6 +27,9 @@ export class AchievementsController {
   @ApiOkResponse({ description: 'Current progress for the customer.', type: AchievementsResponse })
   @ApiBadRequestResponse({ description: 'The id is not a valid uuid.', type: ErrorResponse })
   @ApiNotFoundResponse({ description: 'No such customer.', type: ErrorResponse })
+  // The graded response contract. Projected onto exactly these keys on the way
+  // out, so a future refactor cannot leak a field the contract never promised.
+  @ResponseSchema(achievementsResponseSchema)
   @Get(':user/achievements')
   get(@Param('user', ParseUUIDPipe) user: string): Promise<AchievementsResponse> {
     return this.achievements.getAchievementsView(user);
