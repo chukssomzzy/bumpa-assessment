@@ -2,9 +2,6 @@
 
 A backend service that turns a store's purchase stream into customer segmentation. Purchases unlock **achievements**; accumulated achievements earn a **badge**; every badge earned triggers an automatic **₦300 cashback** to the customer via Paystack.
 
-> **Status:** implementation in progress. The design below is settled and recorded in
-> [issue #1](https://github.com/chukssomzzy/bumpa-assessment/issues/1); this README documents the
-> architecture and the intended setup. This note is removed once the build is complete.
 
 ---
 
